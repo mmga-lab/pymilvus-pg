@@ -7,12 +7,13 @@ from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
 from pymilvus_pg import MilvusPGClient as MilvusClient
+from pymilvus_pg import logger
 
 milvus_client = MilvusClient(
     uri="http://localhost:19530",
     pg_conn_str="postgresql://postgres:admin@localhost:5432/default",
 )
-collection_name = f"test_collection_demo_{int(time.time())}"
+collection_name = "demo"
 
 # Define the schema for the collection
 schema = milvus_client.create_schema()
@@ -66,21 +67,21 @@ milvus_client.upsert(
 
 time.sleep(1)
 res = milvus_client.query(collection_name, "age > 0")
-print(res)
+logger.info(res)
 
 res = milvus_client.export(collection_name)
-print(res)
+logger.info(res)
 
 res = milvus_client.count(collection_name)
-print(res)
+logger.info(res)
 
 milvus_client.entity_compare(collection_name)
 
 
 # Example: Automatically generate a diverse Milvus filter expression
 filter_expr = milvus_client.generate_milvus_filter(collection_name, num_samples=2)
-print("\n[Auto Milvus Filter Example]\n", filter_expr)
+logger.info("\n[Auto Milvus Filter Example]\n", filter_expr)
 for filter in filter_expr:
-    print(filter)
+    logger.info(filter)
     res = milvus_client.query_result_compare(collection_name, filter)
-    print(res)
+    logger.info(res)

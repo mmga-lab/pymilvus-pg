@@ -10,6 +10,7 @@ can be added incrementally.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import pandas as pd
@@ -124,8 +125,10 @@ class MilvusPGClient(MilvusClient):
         create_sql = f"CREATE TABLE IF NOT EXISTS {collection_name} ({', '.join(cols_sql)});"
 
         try:
+            pg_start = time.time()
             self.pg_cur.execute(create_sql)
             self.pg_conn.commit()
+            logger.info("PG CREATE TABLE completed in %.3f s", time.time() - pg_start)
         except Exception as e:
             self.pg_conn.rollback()
             raise RuntimeError(f"Failed to create PG table: {e}") from e
@@ -134,17 +137,25 @@ class MilvusPGClient(MilvusClient):
         # Pass schema as a keyword argument to align with MilvusClient signature where the
         # second positional parameter is `dimension` (int). Using a keyword eliminates the
         # type mismatch error that was raised earlier.
-        return super().create_collection(collection_name, schema=schema, **kwargs)
+        milvus_start = time.time()
+        res = super().create_collection(collection_name, schema=schema, **kwargs)
+        logger.info("Milvus create_collection completed in %.3f s", time.time() - milvus_start)
+        return res
 
     def drop_collection(self, collection_name: str):
         logger.info(f"Dropping collection '{collection_name}' …")
         try:
+            start = time.time()
             self.pg_cur.execute(f"DROP TABLE IF EXISTS {collection_name};")
             self.pg_conn.commit()
+            logger.info("PG DROP TABLE completed in %.3f s", time.time() - start)
         except Exception as e:
             self.pg_conn.rollback()
             raise RuntimeError(f"Failed to drop PG table: {e}") from e
-        return super().drop_collection(collection_name)
+        milvus_start = time.time()
+        res = super().drop_collection(collection_name)
+        logger.info("Milvus drop_collection completed in %.3f s", time.time() - milvus_start)
+        return res
 
     # ------------------------------------------------------------------
     # Write ops with transactional shadow writes
@@ -167,15 +178,24 @@ class MilvusPGClient(MilvusClient):
         values = [tuple(row) for row in df.itertuples(index=False, name=None)]
 
         try:
+            # --- PostgreSQL insert ---
+            logger.info(f"Executing PostgreSQL INSERT (rows={len(values)})…")
+            t0 = time.time()
             self.pg_cur.executemany(insert_sql, values)
+            logger.info(f"PostgreSQL INSERT executed (rowcount={self.pg_cur.rowcount}).")
+            logger.info(f"PostgreSQL INSERT completed in {time.time() - t0:.3f} s.")
         except Exception as e:
             self.pg_conn.rollback()
             raise RuntimeError(f"PostgreSQL insert failed: {e}") from e
 
         try:
+            # --- Milvus insert ---
+            logger.info("Calling Milvus insert …")
+            t0 = time.time()
             result = super().insert(collection_name, data, **kwargs)
+            logger.info(f"Milvus insert completed in {time.time() - t0:.3f} s.")
             self.pg_conn.commit()
-            logger.info("Insert succeeded & committed.")
+            logger.info("PostgreSQL committed. Milvus insert succeeded.")
             return result
         except Exception as e:
             self.pg_conn.rollback()
@@ -215,14 +235,24 @@ class MilvusPGClient(MilvusClient):
         )
         values = [tuple(row) for row in df.itertuples(index=False, name=None)]
         try:
+            # --- PostgreSQL upsert ---
+            logger.info(f"Executing PostgreSQL UPSERT (rows={len(values)})…")   
+            t0 = time.time()
             self.pg_cur.executemany(insert_sql, values)
+            logger.info(f"PostgreSQL UPSERT executed (rowcount={self.pg_cur.rowcount}).")
+            logger.info(f"PostgreSQL UPSERT completed in {time.time() - t0:.3f} s.")
         except Exception as e:
             self.pg_conn.rollback()
             raise RuntimeError(f"PostgreSQL upsert failed: {e}") from e
 
         try:
+            # --- Milvus upsert (insert with conflict) ---
+            logger.info("Calling Milvus upsert …")
+            t0 = time.time()
             result = super().upsert(collection_name, data, **kwargs)
+            logger.info(f"Milvus upsert completed in {time.time() - t0:.3f} s.")
             self.pg_conn.commit()
+            logger.info("PostgreSQL committed. Milvus upsert succeeded.")
             return result
         except Exception as e:
             self.pg_conn.rollback()
@@ -255,7 +285,9 @@ class MilvusPGClient(MilvusClient):
         self.pg_cur.execute(f"SELECT * FROM {collection_name};")
         rows = self.pg_cur.fetchall()
         colnames = [desc[0] for desc in self.pg_cur.description]
-        return [dict(zip(colnames, r)) for r in rows]
+        res = [dict(zip(colnames, r)) for r in rows]
+        df = pd.DataFrame(res)
+        return df
 
     def count(self, collection_name: str):
         """Return counts from Milvus and PostgreSQL for the given collection."""
