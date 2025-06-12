@@ -13,9 +13,9 @@ import json
 import time
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import psycopg2
-import numpy as np
 from deepdiff import DeepDiff
 from psycopg2.extensions import connection as PGConnection
 from psycopg2.extensions import cursor as PGCursor
@@ -236,7 +236,7 @@ class MilvusPGClient(MilvusClient):
         values = [tuple(row) for row in df.itertuples(index=False, name=None)]
         try:
             # --- PostgreSQL upsert ---
-            logger.info(f"Executing PostgreSQL UPSERT (rows={len(values)})…")   
+            logger.info(f"Executing PostgreSQL UPSERT (rows={len(values)})…")
             t0 = time.time()
             self.pg_cur.executemany(insert_sql, values)
             logger.info(f"PostgreSQL UPSERT executed (rowcount={self.pg_cur.rowcount}).")
@@ -285,7 +285,7 @@ class MilvusPGClient(MilvusClient):
         self.pg_cur.execute(f"SELECT * FROM {collection_name};")
         rows = self.pg_cur.fetchall()
         colnames = [desc[0] for desc in self.pg_cur.description]
-        res = [dict(zip(colnames, r)) for r in rows]
+        res = [dict(zip(colnames, r, strict=False)) for r in rows]
         df = pd.DataFrame(res)
         return df
 
@@ -343,11 +343,17 @@ class MilvusPGClient(MilvusClient):
         diff = self._compare_df(milvus_df, pg_df)
         if diff:
             logger.error(
-                f"Query result mismatch for collection '{collection_name}' with filter '{filter}' and output fields '{output_fields}'."
+                "Query result mismatch for collection '%s' with filter '%s' and output fields '%s'.",
+                collection_name,
+                filter,
+                output_fields,
             )
         else:
             logger.info(
-                f"Query result match for collection '{collection_name}' with filter '{filter}' and output fields '{output_fields}'."
+                "Query result match for collection '%s' with filter '%s' and output fields '%s'.",
+                collection_name,
+                filter,
+                output_fields,
             )
         return diff
 
@@ -418,7 +424,11 @@ class MilvusPGClient(MilvusClient):
 
     def _align_df(self, milvus_df: pd.DataFrame, pg_df: pd.DataFrame):
         """Align two DataFrames on primary key and common columns, normalise JSON/ARRAY types."""
-        if self.primary_field and self.primary_field in milvus_df.columns and self.primary_field not in milvus_df.index.names:
+        if (
+            self.primary_field
+            and self.primary_field in milvus_df.columns
+            and self.primary_field not in milvus_df.index.names
+        ):
             milvus_df.set_index(self.primary_field, inplace=True)
         if self.primary_field and self.primary_field in pg_df.columns and self.primary_field not in pg_df.index.names:
             pg_df.set_index(self.primary_field, inplace=True)
@@ -430,9 +440,17 @@ class MilvusPGClient(MilvusClient):
         # JSON fields normalisation
         for field in self.json_fields:
             if field in pg_df.columns:
-                pg_df[field] = pg_df[field].apply(lambda x: json.loads(x) if isinstance(x, str) and x and x[0] in ['{', '[', '"'] else x)
+                pg_df[field] = pg_df[field].apply(
+                    lambda x: json.loads(x) if isinstance(x, str) and x and x[0] in ["{", "[", '"'] else x
+                )
             if field in milvus_df.columns:
-                milvus_df[field] = milvus_df[field].apply(lambda x: x if isinstance(x, dict) else json.loads(x) if isinstance(x, str) and x and x[0] in ['{', '[', '"'] else x)
+                milvus_df[field] = milvus_df[field].apply(
+                    lambda x: x
+                    if isinstance(x, dict)
+                    else json.loads(x)
+                    if isinstance(x, str) and x and x[0] in ["{", "[", '"']
+                    else x
+                )
 
         def _to_py_list(val):
             """Ensure value is list of Python scalars (convert numpy types)."""
@@ -441,9 +459,9 @@ class MilvusPGClient(MilvusClient):
             lst = list(val) if not isinstance(val, list) else val
             cleaned = []
             for item in lst:
-                if isinstance(item, (np.floating,)):
+                if isinstance(item, np.floating):
                     cleaned.append(float(item))
-                elif isinstance(item, (np.integer,)):
+                elif isinstance(item, np.integer):
                     cleaned.append(int(item))
                 else:
                     cleaned.append(item)
@@ -501,24 +519,28 @@ class MilvusPGClient(MilvusClient):
                 if dtype_name == "VARCHAR":
                     exprs.extend([f"{field.name} == '{val}'", f"{field.name} != '{val}'"])
                     if len(val) > 2:
-                        exprs.extend([
-                            f"{field.name} LIKE '{val[:2]}%'",
-                            f"{field.name} LIKE '%{val[-2:]}'",
-                            f"{field.name} LIKE '%{val[1:-1]}%'",
-                        ])
+                        exprs.extend(
+                            [
+                                f"{field.name} LIKE '{val[:2]}%'",
+                                f"{field.name} LIKE '%{val[-2:]}'",
+                                f"{field.name} LIKE '%{val[1:-1]}%'",
+                            ]
+                        )
                 else:
                     exprs.extend([f"{field.name} == {val}", f"{field.name} != {val}"])
             else:
                 # Numeric fields
                 if np.issubdtype(series.dtype, np.number):
                     minv, maxv = np.min(values), np.max(values)
-                    exprs.extend([
-                        f"{field.name} > {minv}",
-                        f"{field.name} < {maxv}",
-                        f"{field.name} >= {minv}",
-                        f"{field.name} <= {maxv}",
-                        f"{field.name} >= {minv} AND {field.name} <= {maxv}",
-                    ])
+                    exprs.extend(
+                        [
+                            f"{field.name} > {minv}",
+                            f"{field.name} < {maxv}",
+                            f"{field.name} >= {minv}",
+                            f"{field.name} <= {maxv}",
+                            f"{field.name} >= {minv} AND {field.name} <= {maxv}",
+                        ]
+                    )
                     # IN / NOT IN (first 5 vals)
                     vals_str = ", ".join(str(v) for v in values[:5])
                     exprs.extend([f"{field.name} in [{vals_str}]", f"{field.name} not in [{vals_str}]"])
@@ -531,18 +553,22 @@ class MilvusPGClient(MilvusClient):
                     exprs.extend([f"{field.name} in [{vals_str}]", f"{field.name} not in [{vals_str}]"])
                     for v in values[:3]:
                         if len(v) > 2:
-                            exprs.extend([
-                                f"{field.name} LIKE '{v[:2]}%'",
-                                f"{field.name} LIKE '%{v[-2:]}'",
-                                f"{field.name} LIKE '%{v[1:-1]}%'",
-                            ])
+                            exprs.extend(
+                                [
+                                    f"{field.name} LIKE '{v[:2]}%'",
+                                    f"{field.name} LIKE '%{v[-2:]}'",
+                                    f"{field.name} LIKE '%{v[1:-1]}%'",
+                                ]
+                            )
                 # Bool fields
                 elif dtype_name == "BOOL":
                     for v in values:
-                        exprs.extend([
-                            f"{field.name} == {str(v).lower()}",
-                            f"{field.name} != {str(v).lower()}",
-                        ])
+                        exprs.extend(
+                            [
+                                f"{field.name} == {str(v).lower()}",
+                                f"{field.name} != {str(v).lower()}",
+                            ]
+                        )
         return exprs
 
     # ------------------------------------------------------------------
@@ -558,7 +584,10 @@ class MilvusPGClient(MilvusClient):
         pg_total = count_res["pg_count"]
         if milvus_total != pg_total:
             logger.error(
-                f"Count mismatch for collection '{collection_name}': Milvus ({milvus_total}) vs PostgreSQL ({pg_total}). Aborting compare."
+                "Count mismatch for collection '%s': Milvus (%s) vs PostgreSQL (%s). Aborting compare.",
+                collection_name,
+                milvus_total,
+                pg_total,
             )
             return False
 
@@ -599,7 +628,7 @@ class MilvusPGClient(MilvusClient):
 
             compared += len(batch_pks)
             if compared in milestones:
-                logger.info(f"Comparison progress: {compared}/{total_pks} ({(compared*100)//total_pks}%) done.")
+                logger.info(f"Comparison progress: {compared}/{total_pks} ({(compared * 100) // total_pks}%) done.")
 
         logger.info(f"Entity comparison completed for collection '{collection_name}'.")
         return True

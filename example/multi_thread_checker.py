@@ -14,6 +14,7 @@ Milvus 与 PostgreSQL 影子表中的数据一致性。
 
 注意：脚本并不会终止，按 Ctrl+C 中断。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,7 +22,6 @@ import logging
 import random
 import threading
 import time
-from typing import List
 
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
@@ -51,7 +51,7 @@ pause_event = threading.Event()
 stop_event = threading.Event()
 
 
-def _next_id_batch(count: int) -> List[int]:
+def _next_id_batch(count: int) -> list[int]:
     """返回一个连续 id 列表，并安全地递增全局计数。"""
     global _global_id
     with _id_lock:
@@ -60,7 +60,7 @@ def _next_id_batch(count: int) -> List[int]:
     return list(range(start, start + count))
 
 
-def _generate_data(id_list: List[int], for_upsert: bool = False):
+def _generate_data(id_list: list[int], for_upsert: bool = False):
     """根据 id 列表生成记录。"""
     data = []
     for _id in id_list:
@@ -146,9 +146,12 @@ def create_collection(client: MilvusClient, name: str):
 def main():
     parser = argparse.ArgumentParser(description="Multi-thread write / verify checker for MilvusPGClient")
     parser.add_argument("--threads", type=int, default=4, help="Writer thread count (default 4)")
-    parser.add_argument("--compare_interval", type=int, default=60, help="Seconds between consistency checks (default 60)")
+    parser.add_argument(
+        "--compare_interval", type=int, default=60, help="Seconds between consistency checks (default 60)"
+    )
     parser.add_argument("--duration", type=int, default=0, help="Total run time in seconds (0 means run indefinitely)")
     parser.add_argument("--uri", type=str, default="http://localhost:19530", help="Milvus server URI")
+    parser.add_argument("--token", type=str, default="", help="Milvus auth token")
     parser.add_argument(
         "--pg_conn",
         type=str,
@@ -159,13 +162,17 @@ def main():
 
     start_time = time.time()
 
-    client = MilvusClient(uri=args.uri, pg_conn_str=args.pg_conn)
+    client = MilvusClient(
+        uri=args.uri,
+        token=args.token,
+        pg_conn_str=args.pg_conn,
+    )
     collection_name = f"{COLLECTION_NAME_PREFIX}_{int(time.time())}"
     logger.info("Using collection: %s", collection_name)
     create_collection(client, collection_name)
 
     # 启动写线程
-    threads: List[threading.Thread] = []
+    threads: list[threading.Thread] = []
     for i in range(args.threads):
         t = threading.Thread(target=worker_loop, name=f"Writer-{i}", args=(client, collection_name), daemon=True)
         t.start()

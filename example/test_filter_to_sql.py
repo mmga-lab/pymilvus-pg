@@ -94,7 +94,9 @@ def build_data():
 
 def main():
     # --- Configuration ---
-    client = MilvusClient(uri="http://localhost:19530", pg_conn_str="postgresql://postgres:admin@localhost:5432/default")
+    client = MilvusClient(
+        uri="http://localhost:19530", pg_conn_str="postgresql://postgres:admin@localhost:5432/default"
+    )
     collection_name = "test_filter_to_sql"
     # Clean up old collection if exists
     try:

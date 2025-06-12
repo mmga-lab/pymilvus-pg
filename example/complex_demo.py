@@ -7,7 +7,6 @@ from pymilvus.milvus_client import IndexParams
 from pymilvus_pg import MilvusPGClient as MilvusClient
 from pymilvus_pg import logger
 
-
 # Configuration section
 MILVUS_URI = "http://localhost:19530"  # Milvus server URI
 PG_CONN = "postgresql://postgres:admin@localhost:5432/default"  # PostgreSQL DSN
@@ -173,13 +172,14 @@ def main():
     try:
         # Query a few records
         query_expr = f"id >= {upsert_new_insert_start_id} and id < {upsert_new_insert_start_id + 5}"
-        milvus_res, pg_res = milvus_client.query(collection_name, filter=query_expr, output_fields=["id", "name", "age"])
+        milvus_res, pg_res = milvus_client.query(
+            collection_name, filter=query_expr, output_fields=["id", "name", "age"]
+        )
         logger.info(f"Query results for '{query_expr}': {milvus_res}")
         logger.info(f"Query results for '{query_expr}': {pg_res}")
         expected_final_count = (NUM_INSERTS - NUM_DELETES) + num_inserts_via_upsert
         logger.info(f"Expected final entity count: {expected_final_count}")
         assert len(milvus_res) == len(pg_res)
-        
 
     except Exception as e:
         logger.error(f"Error during final verification: {e}")
@@ -188,7 +188,7 @@ def main():
     logger.info("Exporting collection data...")
     try:
         export_res = milvus_client.export(collection_name)
-        logger.info(f"Export result: {export_res}") # This might be very large
+        logger.info(f"Export result: {export_res}")  # This might be very large
     except Exception as e:
         logger.error(f"Error during export: {e}")
 
