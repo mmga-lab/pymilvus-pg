@@ -1,8 +1,9 @@
 import json
-from pathlib import Path
-import uuid
 import os
 import time
+import uuid
+from pathlib import Path
+
 import duckdb
 import numpy as np
 import pandas as pd
@@ -35,7 +36,9 @@ class MilvusDuckDBClient(MilvusClient):
                 test_conn = duckdb.connect(duckdb_path, read_only=True)
                 test_conn.close()
             except Exception as e:
-                logger.warning(f"connection failed with error: {e}, WAL file is corrupted, automatically deleted: {wal_path}")
+                logger.warning(
+                    f"connection failed with error: {e}, WAL file is corrupted, automatically deleted: {wal_path}"
+                )
                 os.remove(wal_path)
         self.duck_conn = duckdb.connect(duckdb_path)
         self.fields = []
@@ -149,7 +152,7 @@ class MilvusDuckDBClient(MilvusClient):
         """
         operation_start_time = time.time()
         logger.info(f"开始执行 insert 操作，集合: {collection_name}，数据条数: {len(data)}")
-        
+
         self._get_schema(collection_name)
         df = pd.DataFrame(data)
         for field in self.json_fields:
@@ -195,7 +198,7 @@ class MilvusDuckDBClient(MilvusClient):
         """
         operation_start_time = time.time()
         logger.info(f"开始执行 delete 操作，集合: {collection_name}，删除ID数量: {len(ids)}")
-        
+
         self._get_schema(collection_name)
         try:
             duckdb_start_time = time.time()
@@ -235,7 +238,7 @@ class MilvusDuckDBClient(MilvusClient):
         """
         operation_start_time = time.time()
         logger.info(f"开始执行 upsert 操作，集合: {collection_name}，数据条数: {len(data)}")
-        
+
         self._get_schema(collection_name)
         df = pd.DataFrame(data)
         for field in self.json_fields:
@@ -345,30 +348,35 @@ class MilvusDuckDBClient(MilvusClient):
 
     def count(self, collection_name: str):
         milvus_count = super().query(collection_name, filter="", output_fields=["count(*)"])
-        
+
         # 检查 DuckDB 表是否存在
         try:
-            table_exists = self.duck_conn.execute(
-                f"SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '{collection_name}'"
-            ).fetchone()[0] > 0
-            
+            table_exists = (
+                self.duck_conn.execute(
+                    f"SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '{collection_name}'"
+                ).fetchone()[0]
+                > 0
+            )
+
             if not table_exists:
                 logger.error(f"DuckDB table '{collection_name}' does not exist.")
                 duckdb_count_value = 0
             else:
                 duckdb_count = self.duck_conn.execute(f"SELECT COUNT(*) FROM {collection_name}").fetchone()
-                
+
                 # 处理 duckdb_count 为 None 的情况
                 if duckdb_count is None:
-                    logger.error(f"DuckDB count query returned None for collection '{collection_name}'. "
-                                 f"This might indicate a transaction or connection issue.")
+                    logger.error(
+                        f"DuckDB count query returned None for collection '{collection_name}'. "
+                        f"This might indicate a transaction or connection issue."
+                    )
                     duckdb_count_value = 0
                 else:
                     duckdb_count_value = duckdb_count[0]
         except Exception as e:
             logger.error(f"Failed to query DuckDB count for collection '{collection_name}': {e}")
             duckdb_count_value = 0
-        
+
         res = {
             "milvus_count": milvus_count[0]["count(*)"],
             "duckdb_count": duckdb_count_value,
@@ -653,4 +661,3 @@ class MilvusDuckDBClient(MilvusClient):
                 #             exprs.append(f"{field.name}[{i}] == {val}")
                 #             exprs.append(f"{field.name}[{i}] != {val}")
         return exprs
-

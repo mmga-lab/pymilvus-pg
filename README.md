@@ -30,15 +30,18 @@ To install `pymilvus_duckdb`, you can use pip after installing PDM or directly i
 Here's a basic example of how to use `pymilvus_duckdb`:
 
 ```python
-from pymilvus_duckdb import MilvusDuckDBClient as MilvusClient
+from pymilvus_duckdb import MilvusPGClient as MilvusClient
 from pymilvus.milvus_client import IndexParams
 from pymilvus import DataType
 import random
 import time
 
 # Initialize the client
-# Replace with your Milvus URI and desired DuckDB directory
-milvus_client = MilvusClient(uri="http://localhost:19530", duckdb_dir="./tmp/duckdb_sync")
+# Replace with your Milvus URI and PostgreSQL connection string
+milvus_client = MilvusClient(
+    uri="http://localhost:19530",
+    pg_conn_str="postgresql://user:password@localhost:5432/milvus_shadow",
+)
 
 collection_name = f"my_collection_{int(time.time())}"
 
@@ -115,7 +118,6 @@ for row in exported_data:
 # milvus_client.drop_collection(collection_name)
 
 print("Demo finished.")
-```
 
 
 ## License

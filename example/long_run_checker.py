@@ -25,6 +25,7 @@ UPSERT_BATCH_SIZE = 300  # Number of records to upsert per batch
 # Global ID counter
 global_id = 0
 
+
 def generate_data(start_id, count, for_upsert=False):
     data = []
     for i in range(count):
@@ -45,54 +46,66 @@ def generate_data(start_id, count, for_upsert=False):
         data.append(record)
     return data
 
+
 def perform_large_insert(milvus_client, collection_name):
     """Perform initial large insert operation"""
     global global_id
-    
+
     start_id = global_id
     batch_data = generate_data(start_id, LARGE_BATCH_SIZE)
     global_id += LARGE_BATCH_SIZE
-    
+
     milvus_client.insert(collection_name, batch_data)
     logging.info(f"[LARGE INSERT] Inserted {LARGE_BATCH_SIZE} records, start id: {start_id}")
+
 
 def perform_small_insert(milvus_client, collection_name):
     """Perform small insert operation"""
     global global_id
-    
+
     start_id = global_id
     batch_data = generate_data(start_id, SMALL_BATCH_SIZE)
     global_id += SMALL_BATCH_SIZE
-    
+
     milvus_client.insert(collection_name, batch_data)
     logging.info(f"[SMALL INSERT] Inserted {SMALL_BATCH_SIZE} records, start id: {start_id}")
+
 
 def perform_delete(milvus_client: MilvusClient, collection_name):
     """Perform delete operation"""
     global global_id
-    
+
     # Delete from existing data range
     start_id = max(0, global_id - LARGE_BATCH_SIZE)
     end_id = start_id + DELETE_BATCH_SIZE
     ids_batch = list(range(start_id, end_id))
-    
+
     milvus_client.delete(collection_name, ids=ids_batch)
     logging.info(f"[DELETE] Deleted {len(ids_batch)} records, start id: {start_id}")
+
 
 def perform_upsert(milvus_client, collection_name):
     """Perform upsert operation"""
     global global_id
-    
+
     # Upsert existing data range
     start_id = max(0, global_id - LARGE_BATCH_SIZE // 2)
     batch_data = generate_data(start_id, UPSERT_BATCH_SIZE, for_upsert=True)
-    
+
     milvus_client.upsert(collection_name, batch_data)
     logging.info(f"[UPSERT] Upserted {len(batch_data)} records, start id: {start_id}")
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sequential long run checker with large insert followed by repeated small operations.")
-    parser.add_argument('--repeat_cycles', type=int, default=10, help='Number of repeat cycles for (small insert -> delete -> upsert) (default 10)')
+    parser = argparse.ArgumentParser(
+        description="Sequential long run checker with large insert followed by repeated small operations."
+    )
+    parser.add_argument(
+        "--repeat_cycles",
+        type=int,
+        default=10,
+        help="Number of repeat cycles for (small insert -> delete -> upsert) (default 10)",
+    )
     args = parser.parse_args()
 
     # Create collection
@@ -128,28 +141,28 @@ if __name__ == "__main__":
         logging.info("Starting large insert operation...")
         perform_large_insert(milvus_client, collection_name)
         logging.info("Large insert operation completed.")
-        
+
         # Step 2: Repeat small operations cycle
         logging.info("=" * 50)
         logging.info(f"Starting {args.repeat_cycles} cycles of (small insert -> delete -> upsert)...")
-        
+
         for cycle in range(args.repeat_cycles):
             logging.info(f"--- Cycle {cycle + 1}/{args.repeat_cycles} ---")
-            
+
             # Small insert
             perform_small_insert(milvus_client, collection_name)
             time.sleep(1)  # Brief pause between operations
-            
+
             # Delete
             perform_delete(milvus_client, collection_name)
             time.sleep(1)  # Brief pause between operations
-            
+
             # Upsert
             perform_upsert(milvus_client, collection_name)
             time.sleep(1)  # Brief pause between operations
-            
+
             logging.info(f"Cycle {cycle + 1} completed.")
-    
+
     except KeyboardInterrupt:
         logging.info("Received KeyboardInterrupt, exiting early...")
     except Exception as e:
@@ -157,7 +170,7 @@ if __name__ == "__main__":
 
     logging.info("=" * 50)
     logging.info("Sequential operations completed.")
-    
+
     # Check collection
     logging.info("Performing entity comparison check...")
     milvus_client.entity_compare(collection_name)

@@ -6,7 +6,7 @@ Verify the correctness of converting Milvus filter expressions to SQL WHERE expr
 from pymilvus import CollectionSchema, DataType, FieldSchema
 from pymilvus.milvus_client import IndexParams
 
-from pymilvus_duckdb import MilvusDuckDBClient
+from pymilvus_duckdb import MilvusDuckDBClient as MilvusClient
 
 
 # Build test collection schema
@@ -94,13 +94,11 @@ def build_data():
 
 def main():
     # --- Configuration ---
-    MILVUS_URI = "http://10.104.21.143:19530"  # URI for Milvus server
-    DUCKDB_DIR = "./data/duckdb_sql"  # Directory for DuckDB data
-    client = MilvusDuckDBClient(uri=MILVUS_URI, duckdb_dir=DUCKDB_DIR)
+    client = MilvusClient(uri="http://localhost:19530", pg_conn_str="postgresql://postgres:admin@localhost:5432/default")
     collection_name = "test_filter_to_sql"
     # Clean up old collection if exists
     try:
-        client.drop_collection(collection_name)
+        milvus_client.drop_collection(collection_name)
     except Exception:
         pass
     # Create collection

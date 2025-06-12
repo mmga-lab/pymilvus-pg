@@ -8,7 +8,7 @@ from pymilvus.milvus_client import IndexParams
 
 from pymilvus_duckdb import MilvusDuckDBClient as MilvusClient
 
-milvus_client = MilvusClient(uri="http://10.104.21.143:19530", duckdb_dir="./tmp/duckdb")
+milvus_client = MilvusClient(uri="http://localhost:19530", pg_conn_str="postgresql://postgres:admin@localhost:5432/default")
 collection_name = f"test_collection_demo_{int(time.time())}"
 
 # Define the schema for the collection
@@ -62,7 +62,7 @@ milvus_client.upsert(
 )
 
 time.sleep(1)
-res = milvus_client.query(collection_name, "id > 0")
+res = milvus_client.query(collection_name, "age > 0")
 print(res)
 
 res = milvus_client.export(collection_name)
@@ -81,4 +81,3 @@ for filter in filter_expr:
     print(filter)
     res = milvus_client.query_result_compare(collection_name, filter)
     print(res)
-
