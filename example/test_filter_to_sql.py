@@ -1,12 +1,12 @@
 """
-Test script for MilvusDuckDBClient._milvus_filter_to_sql
+Test script for MilvusPGClient._milvus_filter_to_sql
 Verify the correctness of converting Milvus filter expressions to SQL WHERE expressions.
 """
 
 from pymilvus import CollectionSchema, DataType, FieldSchema
 from pymilvus.milvus_client import IndexParams
 
-from pymilvus_duckdb import MilvusDuckDBClient as MilvusClient
+from pymilvus_pg import MilvusPGClient as MilvusClient
 
 
 # Build test collection schema
@@ -98,7 +98,7 @@ def main():
     collection_name = "test_filter_to_sql"
     # Clean up old collection if exists
     try:
-        milvus_client.drop_collection(collection_name)
+        client.drop_collection(collection_name)
     except Exception:
         pass
     # Create collection
@@ -130,7 +130,7 @@ def main():
         print(f"SQL where:    {sql_where}")
         print("Milvus result:")
         print(milvus_res)
-        print("DuckDB result:")
+        print("PostgreSQL result:")
         print(duckdb_res)
         client.query_result_compare(collection_name, filter=f, output_fields=["*"])
 

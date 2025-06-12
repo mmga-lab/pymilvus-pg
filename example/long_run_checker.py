@@ -6,14 +6,14 @@ import time
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
-from pymilvus_duckdb import MilvusDuckDBClient as MilvusClient
+from pymilvus_pg import MilvusPGClient as MilvusClient
 
 # Set up logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Configuration section
 MILVUS_URI = "http://10.104.21.143:19530"  # Milvus server URI
-DUCKDB_DIR = "./tmp/duckdb_complex"  # Directory to store DuckDB data
+PG_CONN = "postgresql://postgres:admin@localhost:5432/default"  # PostgreSQL DSN
 COLLECTION_NAME_PREFIX = "complex_test_collection"
 
 DIMENSION = 8  # Embedding vector dimension
@@ -106,10 +106,22 @@ if __name__ == "__main__":
         default=10,
         help="Number of repeat cycles for (small insert -> delete -> upsert) (default 10)",
     )
+    parser.add_argument(
+        "--uri",
+        type=str,
+        default=MILVUS_URI,
+        help="Milvus server URI (default http://10.104.21.143:19530)",
+    )
+    parser.add_argument(
+        "--pg_conn",
+        type=str,
+        default=PG_CONN,
+        help="PostgreSQL DSN (default postgresql://postgres:admin@localhost:5432/default)",
+    )
     args = parser.parse_args()
 
     # Create collection
-    milvus_client = MilvusClient(uri=MILVUS_URI, duckdb_dir=DUCKDB_DIR)
+    milvus_client = MilvusClient(uri=args.uri, pg_conn_str=args.pg_conn)
     collection_name = f"{COLLECTION_NAME_PREFIX}_{int(time.time())}"
     logging.info(f"Using collection: {collection_name}")
 

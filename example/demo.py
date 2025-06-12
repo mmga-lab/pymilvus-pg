@@ -6,9 +6,12 @@ import time
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
-from pymilvus_duckdb import MilvusDuckDBClient as MilvusClient
+from pymilvus_pg import MilvusPGClient as MilvusClient
 
-milvus_client = MilvusClient(uri="http://localhost:19530", pg_conn_str="postgresql://postgres:admin@localhost:5432/default")
+milvus_client = MilvusClient(
+    uri="http://localhost:19530",
+    pg_conn_str="postgresql://postgres:admin@localhost:5432/default",
+)
 collection_name = f"test_collection_demo_{int(time.time())}"
 
 # Define the schema for the collection

@@ -1,18 +1,18 @@
-# PyMilvus DuckDB
+# PyMilvus PostgreSQL
 
-`pymilvus_duckdb` is a Python library primarily designed for **validating Milvus data correctness**. It achieves this by synchronizing Milvus write operations (inserts, deletes, upserts) to a DuckDB database in real-time. By comparing the data in Milvus with the synchronized data in DuckDB, users can verify the consistency and accuracy of their Milvus deployments. While it facilitates data synchronization, its core utility lies in providing a robust mechanism for data validation.
+`pymilvus_pg` is a Python library primarily designed for **validating Milvus data correctness**. It achieves this by synchronizing Milvus write operations (inserts, deletes, upserts) to a PostgreSQL database in real-time. By comparing the data in Milvus with the shadow data in PostgreSQL, users can verify the consistency and accuracy of their Milvus deployments. While it facilitates data synchronization, its core utility lies in providing a robust mechanism for data validation.
 
 ## Features
 
 *   **Milvus Client Extension**: Extends the `MilvusClient` functionality.
-*   **Data Synchronization**: Keeps data in Milvus and a local DuckDB instance synchronized.
-*   **Data Export**: Allows exporting collection data from the synchronized DuckDB instance.
-*   **Query Correctness Validation**: Enables verification of Milvus query results by comparing it against a synchronized DuckDB instance.
-*   **Milvus Data Correctness Validation**: Enables verification of Milvus data by comparing it against a synchronized DuckDB instance.
+*   **Data Synchronization**: Keeps data in Milvus and a PostgreSQL shadow database synchronized.
+*   **Data Export**: Allows exporting collection data from the shadow PostgreSQL instance.
+*   **Query Correctness Validation**: Enables verification of Milvus query results by comparing them against PostgreSQL.
+*   **Milvus Data Correctness Validation**: Enables full data comparison between Milvus and PostgreSQL.
 
 ## Installation
 
-To install `pymilvus_duckdb`, you can use pip after installing PDM or directly if the package is published:
+To install `pymilvus_pg`, you can use pip after installing PDM or directly if the package is published:
 
 ```bash
 # Ensure you have pdm installed if you are working with the source
@@ -22,15 +22,15 @@ To install `pymilvus_duckdb`, you can use pip after installing PDM or directly i
 # pdm install
 
 # Or install the package if available on PyPI (example)
-# pip install pymilvus_duckdb
+# pip install pymilvus_pg
 ```
 
 ## Usage
 
-Here's a basic example of how to use `pymilvus_duckdb`:
+Here's a basic example of how to use `pymilvus_pg`:
 
 ```python
-from pymilvus_duckdb import MilvusPGClient as MilvusClient
+from pymilvus_pg import MilvusPGClient as MilvusClient
 from pymilvus.milvus_client import IndexParams
 from pymilvus import DataType
 import random
@@ -79,7 +79,7 @@ data_to_insert = [
 milvus_client.insert(collection_name, data_to_insert)
 print(f"Inserted {len(data_to_insert)} entities.")
 
-# 6. Query data (from Milvus, synchronized to DuckDB)
+# 6. Query data (from Milvus, synchronized to PostgreSQL)
 # Wait a bit for synchronization if operations are very fast
 time.sleep(1) 
 query_res = milvus_client.query(collection_name, filter_expression="age > 25")
@@ -106,11 +106,11 @@ data_to_upsert = [
 milvus_client.upsert(collection_name, data_to_upsert)
 print(f"Upserted {len(data_to_upsert)} entities.")
 
-# 9. Export data (from DuckDB)
+# 9. Export data (from PostgreSQL)
 # Wait for sync
 time.sleep(1)
 exported_data = milvus_client.export(collection_name)
-print(f"Exported data from DuckDB for collection '{collection_name}':")
+print(f"Exported data from PostgreSQL for collection '{collection_name}':")
 for row in exported_data:
     print(row)
 

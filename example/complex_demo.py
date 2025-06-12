@@ -5,14 +5,14 @@ import time
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
-from pymilvus_duckdb import MilvusDuckDBClient as MilvusClient
+from pymilvus_pg import MilvusPGClient as MilvusClient
 
 # Set up logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Configuration section
-MILVUS_URI = "http://10.104.21.143:19530"  # Milvus server URI
-DUCKDB_DIR = "./tmp/duckdb_complex"  # Directory to store DuckDB data
+MILVUS_URI = "http://localhost:19530"  # Milvus server URI
+PG_CONN = "postgresql://postgres:admin@localhost:5432/default"  # PostgreSQL DSN
 COLLECTION_NAME_PREFIX = "complex_test_collection"
 
 DIMENSION = 8  # Embedding vector dimension
@@ -56,7 +56,7 @@ def main():
     logging.info(f"Inserts: {NUM_INSERTS}, Deletes: {NUM_DELETES}, Upserts: {NUM_UPSERTS}")
 
     # --- Initialize Milvus Client ---
-    milvus_client = MilvusClient(uri=MILVUS_URI, duckdb_dir=DUCKDB_DIR)
+    milvus_client = MilvusClient(uri=MILVUS_URI, pg_conn_str=PG_CONN)
     collection_name = f"{COLLECTION_NAME_PREFIX}_{int(time.time())}"
     logging.info(f"Using collection: {collection_name}")
 
@@ -180,7 +180,7 @@ def main():
 
         # Get total count (can be slow on very large datasets)
         # res_count = milvus_client.query(collection_name, expr="id >= 0", output_fields=["count(*)"])
-        # logging.info(f"Final entity count: {res_count[0]['count(*)'] if res_count else 'N/A'}")
+        # logging.info(f"Count after delete: {res_count[0]['count(*)'] if res_count else 'N/A'}")
         # Expected final count: (NUM_INSERTS - NUM_DELETES) + num_inserts_via_upsert
         # = (6M - 2M) + 1M = 5M
         expected_final_count = (NUM_INSERTS - NUM_DELETES) + num_inserts_via_upsert
