@@ -13,7 +13,7 @@ milvus_client = MilvusClient(
     uri="http://localhost:19530",
     pg_conn_str="postgresql://postgres:admin@localhost:5432/default",
 )
-collection_name = "demo"
+collection_name = f"demo_{int(time.time())}"
 
 # Define the schema for the collection
 schema = milvus_client.create_schema()

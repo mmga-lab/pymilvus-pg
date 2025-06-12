@@ -13,7 +13,7 @@ MILVUS_URI = "http://localhost:19530"  # Milvus server URI
 PG_CONN = "postgresql://postgres:admin@localhost:5432/default"  # PostgreSQL DSN
 COLLECTION_NAME_PREFIX = "complex_test_collection"
 
-DIMENSION = 8  # Embedding vector dimension
+DIMENSION = 768  # Embedding vector dimension
 BATCH_SIZE = 3000  # Number of records per batch operation
 
 # Total number of operations to perform

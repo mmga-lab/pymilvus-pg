@@ -128,7 +128,7 @@ class MilvusPGClient(MilvusClient):
             pg_start = time.time()
             self.pg_cur.execute(create_sql)
             self.pg_conn.commit()
-            logger.info("PG CREATE TABLE completed in %.3f s", time.time() - pg_start)
+            logger.info(f"PG CREATE TABLE completed in {time.time() - pg_start:.3f} s")
         except Exception as e:
             self.pg_conn.rollback()
             raise RuntimeError(f"Failed to create PG table: {e}") from e
@@ -139,7 +139,7 @@ class MilvusPGClient(MilvusClient):
         # type mismatch error that was raised earlier.
         milvus_start = time.time()
         res = super().create_collection(collection_name, schema=schema, **kwargs)
-        logger.info("Milvus create_collection completed in %.3f s", time.time() - milvus_start)
+        logger.info(f"Milvus create_collection completed in {time.time() - milvus_start:.3f} s")
         return res
 
     def drop_collection(self, collection_name: str):

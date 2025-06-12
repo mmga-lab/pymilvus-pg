@@ -1,6 +1,6 @@
 [project]
-name = "pymilvus_pg"
-version = "0.2.0"
+name = "pymilvus-pg"
+version = "0.1.1"
 description = "Sync Milvus data to PostgreSQL for validation"
 authors = [
     {name = "zhuwenxing", email = "wenxing.zhu@zilliz.com"},
@@ -22,12 +22,21 @@ build-backend = "pdm.backend"
 [tool.pdm]
 distribution = true
 
+[tool.pdm.build]
+# Include the main source package
+includes = ["src/pymilvus_pg"]
+# Exclude example and tests directories from the build artifacts
+excludes = [
+    "example",
+    "tests"
+]
+
 # Ruff configuration for linting and formatting
 [tool.ruff]
 # Maximum allowed line length
 line-length = 120
 # Target Python version
-target-version = "py39"
+target-version = "py310"
 # Excluded directories and files
 exclude = [
     ".git",

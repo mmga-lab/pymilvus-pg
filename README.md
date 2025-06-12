@@ -1,6 +1,6 @@
 # PyMilvus PostgreSQL
 
-`pymilvus_pg` is a Python library primarily designed for **validating Milvus data correctness**. It achieves this by synchronizing Milvus write operations (inserts, deletes, upserts) to a PostgreSQL database in real-time. By comparing the data in Milvus with the shadow data in PostgreSQL, users can verify the consistency and accuracy of their Milvus deployments. While it facilitates data synchronization, its core utility lies in providing a robust mechanism for data validation.
+`pymilvus-pg` is a Python library primarily designed for **validating Milvus data correctness**. It achieves this by synchronizing Milvus write operations (inserts, deletes, upserts) to a PostgreSQL database in real-time. By comparing the data in Milvus with the shadow data in PostgreSQL, users can verify the consistency and accuracy of their Milvus deployments. While it facilitates data synchronization, its core utility lies in providing a robust mechanism for data validation.
 
 ## Features
 
@@ -12,7 +12,7 @@
 
 ## Installation
 
-To install `pymilvus_pg`, you can use pip after installing PDM or directly if the package is published:
+To install `pymilvus-pg`, you can use pip after installing PDM or directly if the package is published:
 
 ```bash
 # Ensure you have pdm installed if you are working with the source
@@ -22,12 +22,12 @@ To install `pymilvus_pg`, you can use pip after installing PDM or directly if th
 # pdm install
 
 # Or install the package if available on PyPI (example)
-# pip install pymilvus_pg
+# pip install pymilvus-pg
 ```
 
 ## Usage
 
-Here's a basic example of how to use `pymilvus_pg`:
+Here's a basic example of how to use `pymilvus-pg`:
 
 ```python
 from pymilvus_pg import MilvusPGClient as MilvusClient
