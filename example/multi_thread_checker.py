@@ -76,7 +76,7 @@ def _generate_data(id_list: list[int], for_upsert: bool = False):
 def _insert_op(client: MilvusClient, collection: str):
     ids = _next_id_batch(INSERT_BATCH_SIZE)
     client.insert(collection, _generate_data(ids))
-    logger.info("[INSERT] %d rows, start id %d", len(ids), ids[0])
+    logger.info(f"[INSERT] {len(ids)} rows, start id {ids[0]}")
 
 
 def _delete_op(client: MilvusClient, collection: str):
@@ -88,7 +88,7 @@ def _delete_op(client: MilvusClient, collection: str):
     start = random.randint(0, max(1, _global_id - DELETE_BATCH_SIZE))
     ids = list(range(start, start + DELETE_BATCH_SIZE))
     client.delete(collection, ids=ids)
-    logger.info("[DELETE] %d rows, start id %d", len(ids), start)
+    logger.info(f"[DELETE] {len(ids)} rows, start id {start}")
 
 
 def _upsert_op(client: MilvusClient, collection: str):
@@ -98,7 +98,7 @@ def _upsert_op(client: MilvusClient, collection: str):
     start = random.randint(0, max(1, _global_id - UPSERT_BATCH_SIZE))
     ids = list(range(start, start + UPSERT_BATCH_SIZE))
     client.upsert(collection, _generate_data(ids, for_upsert=True))
-    logger.info("[UPSERT] %d rows, start id %d", len(ids), start)
+    logger.info(f"[UPSERT] {len(ids)} rows, start id {start}")
 
 
 OPERATIONS = [_insert_op, _delete_op, _upsert_op]
@@ -114,14 +114,14 @@ def worker_loop(client: MilvusClient, collection: str):
         try:
             op(client, collection)
         except Exception:  # noqa: BLE001
-            logger.exception("Error during %s", op.__name__)
+            logger.exception(f"Error during {op.__name__}")
         # 小睡眠降低压力
         time.sleep(random.uniform(0.05, 0.2))
 
 
 def create_collection(client: MilvusClient, name: str):
     if client.has_collection(name):
-        logger.warning("Collection %s already exists, dropping", name)
+        logger.warning(f"Collection {name} already exists, dropping")
         client.drop_collection(name)
 
     schema = client.create_schema()
@@ -137,7 +137,7 @@ def create_collection(client: MilvusClient, name: str):
     index_params.add_index("embedding", metric_type="L2", index_type="IVF_FLAT", params={"nlist": 128})
     client.create_index(name, index_params)
     client.load_collection(name)
-    logger.info("Collection %s created and loaded", name)
+    logger.info(f"Collection {name} created and loaded")
 
 
 def main():
@@ -167,7 +167,7 @@ def main():
         pg_conn_str=args.pg_conn,
     )
     collection_name = f"{COLLECTION_NAME_PREFIX}_{int(time.time())}"
-    logger.info("Using collection: %s", collection_name)
+    logger.info(f"Using collection: {collection_name}")
     create_collection(client, collection_name)
 
     # 启动写线程
@@ -195,7 +195,7 @@ def main():
                 logger.info("Writers resumed")
             # 检查 duration
             if args.duration > 0 and time.time() - start_time >= args.duration:
-                logger.info("Duration reached (%ds), stopping …", args.duration)
+                logger.info(f"Duration reached ({args.duration}s), stopping …")
                 break
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received, stopping …")

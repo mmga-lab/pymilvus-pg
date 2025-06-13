@@ -110,7 +110,7 @@ class MilvusPGClient(MilvusClient):
             DataType.DOUBLE: "DOUBLE PRECISION",
             DataType.VARCHAR: "VARCHAR",
             DataType.JSON: "JSONB",
-            DataType.FLOAT_VECTOR: "REAL[]",
+            DataType.FLOAT_VECTOR: "DOUBLE PRECISION[]",
             DataType.ARRAY: "JSONB",  # Fallback – store as JSON if unknown element type
         }
         return mapping.get(milvus_type, "TEXT")
@@ -357,14 +357,12 @@ class MilvusPGClient(MilvusClient):
         # Use tolerance on float comparison to avoid insignificant decimal differences
         milvus_dict = milvus_df.to_dict("list")
         pg_dict = pg_df_aligned.to_dict("list")
-        t0 = time.time()
         diff = DeepDiff(
             milvus_dict,
             pg_dict,
             ignore_order=True,
-            significant_digits=2,
+            significant_digits=3,
         )
-        logger.info(f"DeepDiff completed in {time.time() - t0:.3f} s.")
         return diff
 
     def query_result_compare(self, collection_name: str, filter: str = "", output_fields: list[str] | None = None):
@@ -641,6 +639,7 @@ class MilvusPGClient(MilvusClient):
             )
             return False
 
+        t0 = time.time()
         # Retrieve primary keys from PG
         self.pg_cur.execute(f"SELECT {self.primary_field} FROM {collection_name};")
         pks_rows = self.pg_cur.fetchall()
@@ -688,6 +687,7 @@ class MilvusPGClient(MilvusClient):
                 logger.info(f"Comparison progress: {compared}/{total_pks} ({(compared * 100) // total_pks}%) done.")
 
         logger.info(f"Entity comparison completed for collection '{collection_name}'.")
+        logger.info(f"Entity comparison completed in {time.time() - t0:.3f} s.")
         return True
 
     # ------------------------------------------------------------------
