@@ -648,7 +648,7 @@ class MilvusPGClient(MilvusClient):
         # If not full_scan, only do count check
         if not full_scan:
             logger.info(
-                f"Count check passed for collection '{collection_name}', skipping full data compare (full_scan=False)."
+                f"Count check passed for collection '{collection_name} : Milvus ({milvus_total}) vs PostgreSQL ({pg_total}). Skipping full data compare (full_scan=False)."
             )
             return True
 
