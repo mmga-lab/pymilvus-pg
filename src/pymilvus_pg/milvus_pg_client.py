@@ -357,13 +357,14 @@ class MilvusPGClient(MilvusClient):
         # Use tolerance on float comparison to avoid insignificant decimal differences
         milvus_dict = milvus_df.to_dict("list")
         pg_dict = pg_df_aligned.to_dict("list")
-
+        t0 = time.time()
         diff = DeepDiff(
             milvus_dict,
             pg_dict,
             ignore_order=True,
             significant_digits=2,
         )
+        logger.info(f"DeepDiff completed in {time.time() - t0:.3f} s.")
         return diff
 
     def query_result_compare(self, collection_name: str, filter: str = "", output_fields: list[str] | None = None):
