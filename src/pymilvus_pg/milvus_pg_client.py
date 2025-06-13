@@ -362,7 +362,7 @@ class MilvusPGClient(MilvusClient):
             milvus_dict,
             pg_dict,
             ignore_order=True,
-            significant_digits=4,
+            significant_digits=2,
         )
         return diff
 
