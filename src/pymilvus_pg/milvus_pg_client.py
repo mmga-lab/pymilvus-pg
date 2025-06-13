@@ -613,8 +613,8 @@ class MilvusPGClient(MilvusClient):
     # Entity comparison (Milvus vs PostgreSQL)
     # ------------------------------------------------------------------
     def entity_compare(
-        self, collection_name: str, batch_size: int = 1000, *, retry: int = 3, retry_interval: float = 5.0
-    ):
+        self, collection_name: str, batch_size: int = 1000, *, retry: int = 3, retry_interval: float = 5.0, full_scan: bool = False
+    ):  # full_scan controls whether to compare all data or just count
         """Compare entire collection data between Milvus and PostgreSQL in batches."""
         self._get_schema(collection_name)
 
@@ -638,6 +638,11 @@ class MilvusPGClient(MilvusClient):
                 f"Count mismatch for collection '{collection_name}' after {retry} attempts: Milvus ({milvus_total}) vs PostgreSQL ({pg_total}). Aborting compare.",
             )
             return False
+
+        # If not full_scan, only do count check
+        if not full_scan:
+            logger.info(f"Count check passed for collection '{collection_name}', skipping full data compare (full_scan=False).")
+            return True
 
         t0 = time.time()
         # Retrieve primary keys from PG
