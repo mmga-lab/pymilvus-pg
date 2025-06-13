@@ -9,8 +9,9 @@ import random
 import time
 
 from pymilvus import DataType
-from pymilvus_pg import MilvusPGClient, logger
 from pymilvus.milvus_client import IndexParams
+
+from pymilvus_pg import MilvusPGClient, logger
 
 # --- 配置 ---
 MILVUS_URI = "http://localhost:19530"

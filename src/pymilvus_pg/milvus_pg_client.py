@@ -10,8 +10,8 @@ can be added incrementally.
 from __future__ import annotations
 
 import json
-import time
 import threading
+import time
 from typing import Any
 
 import numpy as np
@@ -506,8 +506,12 @@ class MilvusPGClient(MilvusClient):
 
         # Remove vector columns if ignoring them
         if self.ignore_vector and self.float_vector_fields:
-            milvus_df.drop(columns=[c for c in self.float_vector_fields if c in milvus_df.columns], inplace=True, errors="ignore")
-            pg_df.drop(columns=[c for c in self.float_vector_fields if c in pg_df.columns], inplace=True, errors="ignore")
+            milvus_df.drop(
+                columns=[c for c in self.float_vector_fields if c in milvus_df.columns], inplace=True, errors="ignore"
+            )
+            pg_df.drop(
+                columns=[c for c in self.float_vector_fields if c in pg_df.columns], inplace=True, errors="ignore"
+            )
 
         shared_idx = milvus_df.index.intersection(pg_df.index)
         milvus_aligned = milvus_df.loc[shared_idx].sort_index()
@@ -610,7 +614,9 @@ class MilvusPGClient(MilvusClient):
     # ------------------------------------------------------------------
     # Entity comparison (Milvus vs PostgreSQL)
     # ------------------------------------------------------------------
-    def entity_compare(self, collection_name: str, batch_size: int = 1000, *, retry: int = 3, retry_interval: float = 5.0):
+    def entity_compare(
+        self, collection_name: str, batch_size: int = 1000, *, retry: int = 3, retry_interval: float = 5.0
+    ):
         """Compare entire collection data between Milvus and PostgreSQL in batches."""
         self._get_schema(collection_name)
 
@@ -657,7 +663,11 @@ class MilvusPGClient(MilvusClient):
             milvus_df = pd.DataFrame(milvus_data)
             # Drop vector columns for comparison if ignoring vectors
             if self.ignore_vector and self.float_vector_fields:
-                milvus_df.drop(columns=[c for c in self.float_vector_fields if c in milvus_df.columns], inplace=True, errors="ignore")
+                milvus_df.drop(
+                    columns=[c for c in self.float_vector_fields if c in milvus_df.columns],
+                    inplace=True,
+                    errors="ignore",
+                )
 
             # PG fetch
             placeholder = ", ".join(["%s"] * len(batch_pks))

@@ -18,7 +18,6 @@ Milvus 与 PostgreSQL 影子表中的数据一致性。
 from __future__ import annotations
 
 import argparse
-import logging
 import random
 import threading
 import time
@@ -27,13 +26,7 @@ from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
 from pymilvus_pg import MilvusPGClient as MilvusClient
-
-# ---------------------------- 日志配置 ----------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
-)
-logger = logging.getLogger(__name__)
+from pymilvus_pg import logger
 
 # ---------------------------- 默认配置 ---------------------------
 DIMENSION = 8  # 向量维度
