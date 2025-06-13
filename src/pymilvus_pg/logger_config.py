@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -10,7 +11,8 @@ from loguru import logger
 # logs follow the actual run location, convenient for container or script execution.
 _log_dir = Path(os.getenv("PYMILVUS_PG_LOG_DIR", Path.cwd() / "logs"))
 _log_dir.mkdir(parents=True, exist_ok=True)
-_log_file = _log_dir / "pymilvus_pg.log"
+# Generate a unique log file name for each run based on the current timestamp
+_log_file = _log_dir / f"pymilvus_pg_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
 logger.remove()
 logger.add(
@@ -25,6 +27,7 @@ logger.add(
 )
 
 # Add a file sink to persist logs. This keeps DEBUG and above messages in a rotated log file.
+# Each run will have a unique log file based on timestamp.
 logger.add(
     _log_file,
     level="DEBUG",
@@ -55,7 +58,7 @@ def set_logger_level(level: str):
         diagnose=True,
     )
 
-    # Re-add the file sink with the new log level to keep configuration consistent
+    # Re-add the file sink with the new log level and unique file name for this run
     logger.add(
         _log_file,
         level=level.upper(),
