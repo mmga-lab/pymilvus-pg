@@ -1,9 +1,16 @@
 #!/usr/bin/env python
+import os
 import sys
-
+from pathlib import Path
 from loguru import logger
 
 # Default logger configuration
+# Resolve execution directory (cwd) and allow override via env var. This makes
+# logs follow the actual run location, convenient for container or script execution.
+_log_dir = Path(os.getenv("PYMILVUS_PG_LOG_DIR", Path.cwd() / "logs"))
+_log_dir.mkdir(parents=True, exist_ok=True)
+_log_file = _log_dir / "pymilvus_pg.log"
+
 logger.remove()
 logger.add(
     sys.stderr,
@@ -16,15 +23,17 @@ logger.add(
     diagnose=True,
 )
 
-# You can add more sinks here, for example, to a file:
-# logger.add(
-#     "logs/app.log",
-#     level="DEBUG",
-#     rotation="10 MB",  # Rotate log file when it reaches 10 MB
-#     retention="7 days", # Keep logs for 7 days
-#     compression="zip", # Compress rotated files
-#     format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
-# )
+# Add a file sink to persist logs. This keeps DEBUG and above messages in a rotated log file.
+logger.add(
+    _log_file,
+    level="DEBUG",
+    rotation="10 MB",  # Rotate when file reaches 10 MB
+    retention="7 days",  # Keep logs for 7 days
+    compression="zip",  # Compress rotated files
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
+    backtrace=True,
+    diagnose=True,
+)
 
 
 def set_logger_level(level: str):
@@ -41,6 +50,18 @@ def set_logger_level(level: str):
         "<level>{level: <8}</level> | "
         "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
         colorize=True,
+        backtrace=True,
+        diagnose=True,
+    )
+
+    # Re-add the file sink with the new log level to keep configuration consistent
+    logger.add(
+        _log_file,
+        level=level.upper(),
+        rotation="10 MB",
+        retention="7 days",
+        compression="zip",
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
         backtrace=True,
         diagnose=True,
     )

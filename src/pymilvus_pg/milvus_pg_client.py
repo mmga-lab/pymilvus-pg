@@ -591,20 +591,28 @@ class MilvusPGClient(MilvusClient):
     # ------------------------------------------------------------------
     # Entity comparison (Milvus vs PostgreSQL)
     # ------------------------------------------------------------------
-    def entity_compare(self, collection_name: str, batch_size: int = 1000):
+    def entity_compare(self, collection_name: str, batch_size: int = 1000, *, retry: int = 3, retry_interval: float = 5.0):
         """Compare entire collection data between Milvus and PostgreSQL in batches."""
         self._get_schema(collection_name)
 
-        # Count check first
-        count_res = self.count(collection_name)
-        milvus_total = count_res["milvus_count"]
-        pg_total = count_res["pg_count"]
+        # Count check with retry for eventual consistency
+        for attempt in range(retry):
+            count_res = self.count(collection_name)
+            milvus_total = count_res["milvus_count"]
+            pg_total = count_res["pg_count"]
+            if milvus_total == pg_total:
+                break
+
+            logger.warning(
+                f"Count mismatch for collection '{collection_name}' (attempt {attempt + 1}/{retry}): Milvus ({milvus_total}) vs PostgreSQL ({pg_total}). Retrying after {retry_interval}s…",
+            )
+            if attempt < retry - 1:
+                time.sleep(retry_interval)
+
+        # Final validation after retries
         if milvus_total != pg_total:
             logger.error(
-                "Count mismatch for collection '%s': Milvus (%s) vs PostgreSQL (%s). Aborting compare.",
-                collection_name,
-                milvus_total,
-                pg_total,
+                f"Count mismatch for collection '{collection_name}' after {retry} attempts: Milvus ({milvus_total}) vs PostgreSQL ({pg_total}). Aborting compare.",
             )
             return False
 
