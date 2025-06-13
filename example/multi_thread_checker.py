@@ -74,31 +74,49 @@ def _generate_data(id_list: list[int], for_upsert: bool = False):
 
 
 def _insert_op(client: MilvusClient, collection: str):
-    ids = _next_id_batch(INSERT_BATCH_SIZE)
-    client.insert(collection, _generate_data(ids))
-    logger.info(f"[INSERT] {len(ids)} rows, start id {ids[0]}")
+    """Insert operation with exception handling to ensure thread stability."""
+    try:
+        ids = _next_id_batch(INSERT_BATCH_SIZE)
+        client.insert(collection, _generate_data(ids))
+        logger.info(f"[INSERT] {len(ids)} rows, start id {ids[0]}")
+    except Exception as e:
+        logger.error(f"[INSERT] Exception occurred: {e}")
+        # Exception is caught to prevent thread exit
+
 
 
 def _delete_op(client: MilvusClient, collection: str):
+    """Delete operation with exception handling to ensure thread stability."""
     global _global_id
-    # 仅当已有数据时才删除
-    if _global_id == 0:
-        return
-    # 随机选择一段 id
-    start = random.randint(0, max(1, _global_id - DELETE_BATCH_SIZE))
-    ids = list(range(start, start + DELETE_BATCH_SIZE))
-    client.delete(collection, ids=ids)
-    logger.info(f"[DELETE] {len(ids)} rows, start id {start}")
+    try:
+        # Only delete if there is existing data
+        if _global_id == 0:
+            return
+        # Randomly select a range of ids
+        start = random.randint(0, max(1, _global_id - DELETE_BATCH_SIZE))
+        ids = list(range(start, start + DELETE_BATCH_SIZE))
+        client.delete(collection, ids=ids)
+        logger.info(f"[DELETE] {len(ids)} rows, start id {start}")
+    except Exception as e:
+        logger.error(f"[DELETE] Exception occurred: {e}")
+        # Exception is caught to prevent thread exit
+
 
 
 def _upsert_op(client: MilvusClient, collection: str):
+    """Upsert operation with exception handling to ensure thread stability."""
     global _global_id
-    if _global_id == 0:
-        return
-    start = random.randint(0, max(1, _global_id - UPSERT_BATCH_SIZE))
-    ids = list(range(start, start + UPSERT_BATCH_SIZE))
-    client.upsert(collection, _generate_data(ids, for_upsert=True))
-    logger.info(f"[UPSERT] {len(ids)} rows, start id {start}")
+    try:
+        if _global_id == 0:
+            return
+        start = random.randint(0, max(1, _global_id - UPSERT_BATCH_SIZE))
+        ids = list(range(start, start + UPSERT_BATCH_SIZE))
+        client.upsert(collection, _generate_data(ids, for_upsert=True))
+        logger.info(f"[UPSERT] {len(ids)} rows, start id {start}")
+    except Exception as e:
+        logger.error(f"[UPSERT] Exception occurred: {e}")
+        # Exception is caught to prevent thread exit
+
 
 
 OPERATIONS = [_insert_op, _delete_op, _upsert_op]

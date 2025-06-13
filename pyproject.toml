@@ -52,8 +52,7 @@ exclude = [
 # Enable auto-fix for lint errors
 fix = true
 
-[tool.ruff.lint]
-# Enabled linting rules: E (pycodestyle), F (pyflakes), I (isort), B (bugbear), UP (pyupgrade)
+[tool.ruff.lint]# Enabled linting rules: E (pycodestyle), F (pyflakes), I (isort), B (bugbear), UP (pyupgrade)
 select = [
     "E",
     "F",
@@ -61,3 +60,4 @@ select = [
     "B",
     "UP"
 ]
+ignore = ["E501"]
