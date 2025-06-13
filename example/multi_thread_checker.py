@@ -18,15 +18,19 @@ Milvus 与 PostgreSQL 影子表中的数据一致性。
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import threading
 import time
 
+from dotenv import load_dotenv
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
 from pymilvus_pg import MilvusPGClient as MilvusClient
 from pymilvus_pg import logger
+
+load_dotenv()
 
 # ---------------------------- 默认配置 ---------------------------
 DIMENSION = 8  # 向量维度
@@ -143,12 +147,14 @@ def main():
         "--compare_interval", type=int, default=60, help="Seconds between consistency checks (default 60)"
     )
     parser.add_argument("--duration", type=int, default=0, help="Total run time in seconds (0 means run indefinitely)")
-    parser.add_argument("--uri", type=str, default="http://localhost:19530", help="Milvus server URI")
-    parser.add_argument("--token", type=str, default="", help="Milvus auth token")
+    parser.add_argument(
+        "--uri", type=str, default=os.getenv("MILVUS_URI", "http://localhost:19530"), help="Milvus server URI"
+    )
+    parser.add_argument("--token", type=str, default=os.getenv("MILVUS_TOKEN", ""), help="Milvus auth token")
     parser.add_argument(
         "--pg_conn",
         type=str,
-        default="postgresql://postgres:admin@localhost:5432/default",
+        default=os.getenv("PG_CONN", "postgresql://postgres:admin@localhost:5432/default"),
         help="PostgreSQL DSN",
     )
     args = parser.parse_args()

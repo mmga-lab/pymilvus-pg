@@ -1,15 +1,20 @@
+import os
 import random
 import time
 
+from dotenv import load_dotenv
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
 from pymilvus_pg import MilvusPGClient as MilvusClient
 from pymilvus_pg import logger
 
+# Load environment variables from .env file
+load_dotenv()
+
 # Configuration section
-MILVUS_URI = "http://localhost:19530"  # Milvus server URI
-PG_CONN = "postgresql://postgres:admin@localhost:5432/default"  # PostgreSQL DSN
+MILVUS_URI = os.environ.get("MILVUS_URI", "http://localhost:19530")  # Milvus server URI
+PG_CONN = os.environ.get("PG_CONN", "postgresql://postgres:admin@localhost:5432/default")  # PostgreSQL DSN
 COLLECTION_NAME_PREFIX = "complex_test_collection"
 
 DIMENSION = 768  # Embedding vector dimension

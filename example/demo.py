@@ -1,17 +1,21 @@
 # Configuration section
 # Define the Milvus client and collection name
+import os
 import random
 import time
 
+from dotenv import load_dotenv
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
 from pymilvus_pg import MilvusPGClient as MilvusClient
 from pymilvus_pg import logger
 
+load_dotenv()
+
 milvus_client = MilvusClient(
-    uri="http://localhost:19530",
-    pg_conn_str="postgresql://postgres:admin@localhost:5432/default",
+    uri=os.getenv("MILVUS_URI", "http://localhost:19530"),
+    pg_conn_str=os.getenv("PG_CONN", "postgresql://postgres:admin@localhost:5432/default"),
 )
 collection_name = f"demo_{int(time.time())}"
 

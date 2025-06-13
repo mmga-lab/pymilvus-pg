@@ -1,19 +1,21 @@
 import argparse
-import logging
+import os
 import random
 import time
 
+from dotenv import load_dotenv
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
 from pymilvus_pg import MilvusPGClient as MilvusClient
+from pymilvus_pg import logger
 
-# Set up logging configuration
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Load environment variables from .env file
+load_dotenv()
 
 # Configuration section
-MILVUS_URI = "http://10.104.21.143:19530"  # Milvus server URI
-PG_CONN = "postgresql://postgres:admin@localhost:5432/default"  # PostgreSQL DSN
+MILVUS_URI = os.getenv("MILVUS_URI", "http://10.104.21.143:19530")  # Milvus server URI
+PG_CONN = os.getenv("PG_CONN", "postgresql://postgres:admin@localhost:5432/default")  # PostgreSQL DSN
 COLLECTION_NAME_PREFIX = "complex_test_collection"
 
 DIMENSION = 8  # Embedding vector dimension
@@ -56,7 +58,7 @@ def perform_large_insert(milvus_client, collection_name):
     global_id += LARGE_BATCH_SIZE
 
     milvus_client.insert(collection_name, batch_data)
-    logging.info(f"[LARGE INSERT] Inserted {LARGE_BATCH_SIZE} records, start id: {start_id}")
+    logger.info(f"[LARGE INSERT] Inserted {LARGE_BATCH_SIZE} records, start id: {start_id}")
 
 
 def perform_small_insert(milvus_client, collection_name):
@@ -68,7 +70,7 @@ def perform_small_insert(milvus_client, collection_name):
     global_id += SMALL_BATCH_SIZE
 
     milvus_client.insert(collection_name, batch_data)
-    logging.info(f"[SMALL INSERT] Inserted {SMALL_BATCH_SIZE} records, start id: {start_id}")
+    logger.info(f"[SMALL INSERT] Inserted {SMALL_BATCH_SIZE} records, start id: {start_id}")
 
 
 def perform_delete(milvus_client: MilvusClient, collection_name):
@@ -81,7 +83,7 @@ def perform_delete(milvus_client: MilvusClient, collection_name):
     ids_batch = list(range(start_id, end_id))
 
     milvus_client.delete(collection_name, ids=ids_batch)
-    logging.info(f"[DELETE] Deleted {len(ids_batch)} records, start id: {start_id}")
+    logger.info(f"[DELETE] Deleted {len(ids_batch)} records, start id: {start_id}")
 
 
 def perform_upsert(milvus_client, collection_name):
@@ -93,7 +95,7 @@ def perform_upsert(milvus_client, collection_name):
     batch_data = generate_data(start_id, UPSERT_BATCH_SIZE, for_upsert=True)
 
     milvus_client.upsert(collection_name, batch_data)
-    logging.info(f"[UPSERT] Upserted {len(batch_data)} records, start id: {start_id}")
+    logger.info(f"[UPSERT] Upserted {len(batch_data)} records, start id: {start_id}")
 
 
 if __name__ == "__main__":
@@ -123,10 +125,10 @@ if __name__ == "__main__":
     # Create collection
     milvus_client = MilvusClient(uri=args.uri, pg_conn_str=args.pg_conn)
     collection_name = f"{COLLECTION_NAME_PREFIX}_{int(time.time())}"
-    logging.info(f"Using collection: {collection_name}")
+    logger.info(f"Using collection: {collection_name}")
 
     if milvus_client.has_collection(collection_name):
-        logging.warning(f"Collection '{collection_name}' already exists. Dropping it.")
+        logger.warning(f"Collection '{collection_name}' already exists. Dropping it.")
         milvus_client.drop_collection(collection_name)
 
     schema = milvus_client.create_schema()
@@ -137,29 +139,29 @@ if __name__ == "__main__":
     schema.add_field("array_field", DataType.ARRAY, element_type=DataType.INT64, max_capacity=20)
     schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=DIMENSION)
     milvus_client.create_collection(collection_name, schema)
-    logging.info(f"Collection '{collection_name}' created successfully.")
+    logger.info(f"Collection '{collection_name}' created successfully.")
 
     index_params = IndexParams()
     index_params.add_index("embedding", metric_type="L2", index_type="IVF_FLAT", params={"nlist": 128})
     milvus_client.create_index(collection_name, index_params)
-    logging.info("Index created successfully.")
+    logger.info("Index created successfully.")
     milvus_client.load_collection(collection_name)
-    logging.info(f"Collection '{collection_name}' loaded.")
+    logger.info(f"Collection '{collection_name}' loaded.")
     time.sleep(2)
 
     try:
         # Step 1: Perform large insert operation
-        logging.info("=" * 50)
-        logging.info("Starting large insert operation...")
+        logger.info("=" * 50)
+        logger.info("Starting large insert operation...")
         perform_large_insert(milvus_client, collection_name)
-        logging.info("Large insert operation completed.")
+        logger.info("Large insert operation completed.")
 
         # Step 2: Repeat small operations cycle
-        logging.info("=" * 50)
-        logging.info(f"Starting {args.repeat_cycles} cycles of (small insert -> delete -> upsert)...")
+        logger.info("=" * 50)
+        logger.info(f"Starting {args.repeat_cycles} cycles of (small insert -> delete -> upsert)...")
 
         for cycle in range(args.repeat_cycles):
-            logging.info(f"--- Cycle {cycle + 1}/{args.repeat_cycles} ---")
+            logger.info(f"--- Cycle {cycle + 1}/{args.repeat_cycles} ---")
 
             # Small insert
             perform_small_insert(milvus_client, collection_name)
@@ -173,16 +175,16 @@ if __name__ == "__main__":
             perform_upsert(milvus_client, collection_name)
             time.sleep(1)  # Brief pause between operations
 
-            logging.info(f"Cycle {cycle + 1} completed.")
+            logger.info(f"Cycle {cycle + 1} completed.")
 
     except KeyboardInterrupt:
-        logging.info("Received KeyboardInterrupt, exiting early...")
+        logger.info("Received KeyboardInterrupt, exiting early...")
     except Exception as e:
-        logging.error(f"Exception occurred: {e}", exc_info=True)
+        logger.error(f"Exception occurred: {e}", exc_info=True)
 
-    logging.info("=" * 50)
-    logging.info("Sequential operations completed.")
+    logger.info("=" * 50)
+    logger.info("Sequential operations completed.")
 
     # Check collection
-    logging.info("Performing entity comparison check...")
+    logger.info("Performing entity comparison check...")
     milvus_client.entity_compare(collection_name)

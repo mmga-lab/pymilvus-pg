@@ -3,10 +3,15 @@ Test script for MilvusPGClient._milvus_filter_to_sql
 Verify the correctness of converting Milvus filter expressions to SQL WHERE expressions.
 """
 
+import os
+
+from dotenv import load_dotenv
 from pymilvus import CollectionSchema, DataType, FieldSchema
 from pymilvus.milvus_client import IndexParams
 
 from pymilvus_pg import MilvusPGClient as MilvusClient
+
+load_dotenv()
 
 
 # Build test collection schema
@@ -95,7 +100,8 @@ def build_data():
 def main():
     # --- Configuration ---
     client = MilvusClient(
-        uri="http://localhost:19530", pg_conn_str="postgresql://postgres:admin@localhost:5432/default"
+        uri=os.getenv("MILVUS_URI", "http://localhost:19530"),
+        pg_conn_str=os.getenv("PG_CONN", "postgresql://postgres:admin@localhost:5432/default"),
     )
     collection_name = "test_filter_to_sql"
     # Clean up old collection if exists

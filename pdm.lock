@@ -5,7 +5,7 @@
 groups = ["default"]
 strategy = []
 lock_version = "4.5.0"
-content_hash = "sha256:60f64956977698ce11e54c7164fb69b3e718d44193136a7d53d6f0d891935d3d"
+content_hash = "sha256:eb90ce941d894088674be9ec1c0577dd58122ac014970a08409fc6f6de2441ad"
 
 [[metadata.targets]]
 requires_python = ">=3.10"
@@ -29,6 +29,17 @@ dependencies = [
 files = [
     {file = "deepdiff-8.5.0-py3-none-any.whl", hash = "sha256:d4599db637f36a1c285f5fdfc2cd8d38bde8d8be8636b65ab5e425b67c54df26"},
     {file = "deepdiff-8.5.0.tar.gz", hash = "sha256:a4dd3529fa8d4cd5b9cbb6e3ea9c95997eaa919ba37dac3966c1b8f872dc1cd1"},
+]
+
+[[package]]
+name = "dotenv"
+version = "0.9.9"
+summary = ""
+dependencies = [
+    "python-dotenv",
+]
+files = [
+    {file = "dotenv-0.9.9-py2.py3-none-any.whl", hash = "sha256:29cf74a087b31dafdb5a446b6d7e11cbce8ed2741540e2339c69fbef92c94ce9"},
 ]
 
 [[package]]

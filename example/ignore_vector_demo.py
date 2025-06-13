@@ -5,17 +5,21 @@
 
 from __future__ import annotations
 
+import os
 import random
 import time
 
+from dotenv import load_dotenv
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
 from pymilvus_pg import MilvusPGClient, logger
 
+load_dotenv()
+
 # --- 配置 ---
-MILVUS_URI = "http://localhost:19530"
-PG_CONN_STR = "postgresql://postgres:admin@localhost:5432/default"
+MILVUS_URI = os.getenv("MILVUS_URI", "http://localhost:19530")
+PG_CONN_STR = os.getenv("PG_CONN", "postgresql://postgres:admin@localhost:5432/default")
 COLLECTION_NAME = f"ignore_vec_demo_{int(time.time())}"
 DIM = 128
 
@@ -28,7 +32,7 @@ schema.add_field("id", DataType.INT64, is_primary=True, auto_id=False)
 schema.add_field("name", DataType.VARCHAR, max_length=128)
 schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=DIM)
 client.create_collection(COLLECTION_NAME, schema)
-logger.info("Collection created: %s", COLLECTION_NAME)
+logger.info(f"Collection created: {COLLECTION_NAME}")
 
 # --- 创建向量索引 ---
 index_params = IndexParams()
