@@ -37,9 +37,12 @@ class MilvusPGClient(MilvusClient):
         Milvus server uri, passed through to :class:`pymilvus.MilvusClient`.
     token: str, optional
         Auth token for Milvus.
+    ignore_vector: bool, optional
+        If True, skip handling FLOAT_VECTOR fields in PostgreSQL operations and comparisons.
     """
 
     def __init__(self, *args: Any, **kwargs: Any):
+        self.ignore_vector: bool = kwargs.pop("ignore_vector", False)  # noqa: D401
         self.pg_conn_str: str = kwargs.pop("pg_conn_str")
         uri = kwargs.get("uri", "")
         token = kwargs.get("token", "")
@@ -117,6 +120,9 @@ class MilvusPGClient(MilvusClient):
         # Build PG CREATE TABLE SQL based on schema
         cols_sql = []
         for f in schema.fields:
+            # Skip vector fields in PostgreSQL if requested
+            if self.ignore_vector and f.dtype == DataType.FLOAT_VECTOR:
+                continue
             pg_type = self._milvus_dtype_to_pg(f.dtype)
             col_def = f"{f.name} {pg_type}"
             if f.is_primary:
@@ -170,6 +176,9 @@ class MilvusPGClient(MilvusClient):
             df[field] = df[field].apply(json.dumps)
         for field in self.array_fields:
             df[field] = df[field].apply(json.dumps)
+        # Drop vector columns for PG if ignoring vectors
+        if self.ignore_vector and self.float_vector_fields:
+            df.drop(columns=[c for c in self.float_vector_fields if c in df.columns], inplace=True, errors="ignore")
 
         # Build INSERT SQL – we use execute_values for efficiency if available
         columns = list(df.columns)
@@ -226,6 +235,9 @@ class MilvusPGClient(MilvusClient):
             df[field] = df[field].apply(json.dumps)
         for field in self.array_fields:
             df[field] = df[field].apply(json.dumps)
+        # Drop vector columns for PG if ignoring vectors
+        if self.ignore_vector and self.float_vector_fields:
+            df.drop(columns=[c for c in self.float_vector_fields if c in df.columns], inplace=True, errors="ignore")
         cols = list(df.columns)
         values_template = ", ".join(["%s"] * len(cols))
         updates = ", ".join([f"{col}=EXCLUDED.{col}" for col in cols])
@@ -473,6 +485,11 @@ class MilvusPGClient(MilvusClient):
             if field in pg_df.columns:
                 pg_df[field] = pg_df[field].apply(_to_py_list)
 
+        # Remove vector columns if ignoring them
+        if self.ignore_vector and self.float_vector_fields:
+            milvus_df.drop(columns=[c for c in self.float_vector_fields if c in milvus_df.columns], inplace=True, errors="ignore")
+            pg_df.drop(columns=[c for c in self.float_vector_fields if c in pg_df.columns], inplace=True, errors="ignore")
+
         shared_idx = milvus_df.index.intersection(pg_df.index)
         milvus_aligned = milvus_df.loc[shared_idx].sort_index()
         pg_aligned = pg_df.loc[shared_idx].sort_index()
@@ -611,6 +628,9 @@ class MilvusPGClient(MilvusClient):
             milvus_filter = f"{self.primary_field} in {list(batch_pks)}"
             milvus_data = super().query(collection_name, filter=milvus_filter, output_fields=["*"])
             milvus_df = pd.DataFrame(milvus_data)
+            # Drop vector columns for comparison if ignoring vectors
+            if self.ignore_vector and self.float_vector_fields:
+                milvus_df.drop(columns=[c for c in self.float_vector_fields if c in milvus_df.columns], inplace=True, errors="ignore")
 
             # PG fetch
             placeholder = ", ".join(["%s"] * len(batch_pks))
