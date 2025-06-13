@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import time
+import threading
 from typing import Any
 
 import numpy as np
@@ -64,6 +65,8 @@ class MilvusPGClient(MilvusClient):
         self.array_fields: list[str] = []
         self.varchar_fields: list[str] = []
         self.float_vector_fields: list[str] = []
+        # Lock to synchronize write operations across threads
+        self._lock: threading.Lock = threading.Lock()
 
     # ---------------------------------------------------------------------
     # Utilities
@@ -145,7 +148,7 @@ class MilvusPGClient(MilvusClient):
         # type mismatch error that was raised earlier.
         milvus_start = time.time()
         res = super().create_collection(collection_name, schema=schema, **kwargs)
-        logger.info(f"Milvus create_collection completed in {time.time() - milvus_start:.3f} s")
+        logger.info(f"Milvus create_collection completed in {time.time() - milvus_start:.3f} s.")
         return res
 
     def drop_collection(self, collection_name: str):
@@ -166,6 +169,19 @@ class MilvusPGClient(MilvusClient):
     # ------------------------------------------------------------------
     # Write ops with transactional shadow writes
     # ------------------------------------------------------------------
+    @staticmethod
+    def _synchronized(method):
+        """Decorator to run method under instance-level lock."""
+        from functools import wraps
+
+        @wraps(method)
+        def _wrapper(self, *args, **kwargs):
+            with self._lock:
+                return method(self, *args, **kwargs)
+
+        return _wrapper
+
+    @_synchronized
     def insert(self, collection_name: str, data: list[dict[str, Any]], **kwargs: Any):
         self._get_schema(collection_name)
         logger.info(f"Insert {len(data)} rows into '{collection_name}' …")
@@ -210,24 +226,7 @@ class MilvusPGClient(MilvusClient):
             self.pg_conn.rollback()
             raise RuntimeError(f"Milvus insert failed, PG rolled back: {e}") from e
 
-    def delete(self, collection_name: str, ids: list[int | str], **kwargs: Any):
-        self._get_schema(collection_name)
-        placeholder = ", ".join(["%s"] * len(ids))
-        delete_sql = f"DELETE FROM {collection_name} WHERE {self.primary_field} IN ({placeholder});"
-        try:
-            self.pg_cur.execute(delete_sql, ids)
-        except Exception as e:
-            self.pg_conn.rollback()
-            raise RuntimeError(f"PostgreSQL delete failed: {e}") from e
-
-        try:
-            result = super().delete(collection_name, ids=ids, **kwargs)
-            self.pg_conn.commit()
-            return result
-        except Exception as e:
-            self.pg_conn.rollback()
-            raise RuntimeError(f"Milvus delete failed, PG rolled back: {e}") from e
-
+    @_synchronized
     def upsert(self, collection_name: str, data: list[dict[str, Any]], **kwargs: Any):
         self._get_schema(collection_name)
         df = pd.DataFrame(data)
@@ -269,6 +268,25 @@ class MilvusPGClient(MilvusClient):
         except Exception as e:
             self.pg_conn.rollback()
             raise RuntimeError(f"Milvus upsert failed, PG rolled back: {e}") from e
+
+    @_synchronized
+    def delete(self, collection_name: str, ids: list[int | str], **kwargs: Any):
+        self._get_schema(collection_name)
+        placeholder = ", ".join(["%s"] * len(ids))
+        delete_sql = f"DELETE FROM {collection_name} WHERE {self.primary_field} IN ({placeholder});"
+        try:
+            self.pg_cur.execute(delete_sql, ids)
+        except Exception as e:
+            self.pg_conn.rollback()
+            raise RuntimeError(f"PostgreSQL delete failed: {e}") from e
+
+        try:
+            result = super().delete(collection_name, ids=ids, **kwargs)
+            self.pg_conn.commit()
+            return result
+        except Exception as e:
+            self.pg_conn.rollback()
+            raise RuntimeError(f"Milvus delete failed, PG rolled back: {e}") from e
 
     # ------------------------------------------------------------------
     # Read utilities (validation helpers)
