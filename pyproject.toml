@@ -1,6 +1,6 @@
 [project]
 name = "pymilvus-pg"
-version = "0.1.1"
+version = "0.1.2"
 description = "Sync Milvus data to PostgreSQL for validation"
 authors = [
     {name = "zhuwenxing", email = "wenxing.zhu@zilliz.com"},
