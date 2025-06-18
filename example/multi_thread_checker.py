@@ -23,14 +23,14 @@ import random
 import threading
 import time
 
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
 from pymilvus_pg import MilvusPGClient as MilvusClient
 from pymilvus_pg import logger
 
-load_dotenv()
+# load_dotenv()
 
 # ---------------------------- 默认配置 ---------------------------
 DIMENSION = 8  # 向量维度
