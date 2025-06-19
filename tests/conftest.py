@@ -7,8 +7,8 @@ the pymilvus-pg library functionality.
 
 import os
 import time
+
 import pytest
-import psycopg2
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 

@@ -5,7 +5,6 @@ This module tests the logging configuration and level management
 features of the pymilvus-pg package.
 """
 
-import pytest
 from pymilvus_pg import logger, set_logger_level
 
 

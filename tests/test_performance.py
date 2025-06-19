@@ -5,12 +5,12 @@ This module contains performance benchmarks and stress tests
 for the pymilvus-pg library.
 """
 
-import pytest
-import time
 import statistics
-from typing import List, Dict, Any
+import time
 
-from tests.test_utils import TestDataGenerator, SchemaBuilder, TestCollectionManager
+import pytest
+
+from tests.test_utils import SchemaBuilder, TestCollectionManager, TestDataGenerator
 
 
 @pytest.mark.slow
@@ -349,7 +349,7 @@ class TestStressTests:
             
             # Test comparison on large dataset (sample only)
             start_time = time.time()
-            comparison_result = test_client.entity_compare(
+            test_client.entity_compare(
                 collection, 
                 batch_size=1000, 
                 full_scan=False  # Sample comparison for performance

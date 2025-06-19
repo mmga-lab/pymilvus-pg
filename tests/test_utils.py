@@ -7,7 +7,7 @@ different test modules.
 
 import random
 import time
-from typing import Any, Dict, List
+from typing import Any
 
 from pymilvus import DataType
 
@@ -16,7 +16,7 @@ class TestDataGenerator:
     """Generate test data for various scenarios."""
 
     @staticmethod
-    def generate_basic_data(count: int, start_id: int = 0) -> List[Dict[str, Any]]:
+    def generate_basic_data(count: int, start_id: int = 0) -> list[dict[str, Any]]:
         """Generate basic test data with id, name, age, and embedding fields."""
         return [
             {
@@ -29,7 +29,7 @@ class TestDataGenerator:
         ]
 
     @staticmethod
-    def generate_complex_data(count: int, start_id: int = 0, embedding_dim: int = 8) -> List[Dict[str, Any]]:
+    def generate_complex_data(count: int, start_id: int = 0, embedding_dim: int = 8) -> list[dict[str, Any]]:
         """Generate complex test data with all field types."""
         return [
             {
@@ -50,8 +50,8 @@ class TestDataGenerator:
         ]
 
     @staticmethod
-    def generate_update_data(original_data: List[Dict[str, Any]], 
-                           fields_to_modify: List[str] = None) -> List[Dict[str, Any]]:
+    def generate_update_data(original_data: list[dict[str, Any]], 
+                           fields_to_modify: list[str] = None) -> list[dict[str, Any]]:
         """Generate updated version of existing data."""
         if fields_to_modify is None:
             fields_to_modify = ["name", "age", "score"]
@@ -188,7 +188,7 @@ class TestCollectionManager:
         self.client = client
         self.created_collections = []
 
-    def create_collection_with_data(self, collection_name: str, schema, data: List[Dict[str, Any]], 
+    def create_collection_with_data(self, collection_name: str, schema, data: list[dict[str, Any]], 
                                   index_field: str = "embedding"):
         """Create collection, add index, load, and insert data."""
         # Create collection
@@ -240,7 +240,7 @@ def assert_collection_consistency(client, collection_name: str):
         f"Found {len(pk_comparison['pg_only'])} records only in PostgreSQL"
 
 
-def generate_filter_expressions(field_names: List[str], sample_count: int = 5) -> List[str]:
+def generate_filter_expressions(field_names: list[str], sample_count: int = 5) -> list[str]:
     """Generate various filter expressions for testing."""
     filters = []
     

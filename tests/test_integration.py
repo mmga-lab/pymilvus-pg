@@ -6,9 +6,10 @@ the complete workflow of the pymilvus-pg library including
 data synchronization and validation.
 """
 
-import pytest
-import time
 import random
+import time
+
+import pytest
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 

@@ -40,7 +40,7 @@ logger.remove()
 # INFO and DEBUG messages are captured in log files
 logger.add(
     sys.stderr,
-    level="WARNING",  # Reduced from INFO to minimize console output
+    level="INFO",  # Reduced from INFO to minimize console output
     format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
     "<level>{level: <8}</level> | "
     "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",

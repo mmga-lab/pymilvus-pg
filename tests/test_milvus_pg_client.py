@@ -5,11 +5,11 @@ This module contains comprehensive tests for the MilvusPGClient class,
 including basic operations, data synchronization, and validation features.
 """
 
-import pytest
-import time
 import random
+import time
+
+import pytest
 from pymilvus import DataType
-from pymilvus.milvus_client import IndexParams
 
 from pymilvus_pg import MilvusPGClient
 

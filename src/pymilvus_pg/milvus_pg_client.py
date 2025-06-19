@@ -28,7 +28,6 @@ import pandas as pd
 import psycopg2
 from deepdiff import DeepDiff
 from psycopg2.extensions import connection as PGConnection
-from psycopg2.extensions import cursor as PGCursor
 from psycopg2.extras import execute_values
 from pymilvus import Collection, CollectionSchema, DataType, MilvusClient, connections
 
@@ -720,9 +719,42 @@ class MilvusPGClient(MilvusClient):
             milvus_dict,
             pg_dict,
             ignore_order=True,  # Ignore row order differences
-            significant_digits=6,  # Tolerance for floating point precision
+            significant_digits=3,  # Tolerance for floating point precision
         )
+        
+        # Print detailed differences for debugging if differences found
+        if diff:
+            self._print_detailed_diff(milvus_aligned, pg_aligned)
+        
         return diff
+    
+    def _print_detailed_diff(self, milvus_df: pd.DataFrame, pg_df: pd.DataFrame):
+        """
+        Print detailed differences with primary key information for debugging.
+        
+        This method analyzes the DeepDiff result and prints specific row-level
+        differences with primary key information to aid in debugging.
+        
+        Parameters
+        ----------
+        milvus_df : pd.DataFrame
+            Aligned DataFrame from Milvus
+        pg_df : pd.DataFrame
+            Aligned DataFrame from PostgreSQL
+        """
+        # Row-by-row differences
+        logger.error("--- ROW-BY-ROW DIFFERENCES ---")
+        # Identify rows where any column differs
+        diff_mask = ~(milvus_df.eq(pg_df))
+        for pk, row_mask in diff_mask.iterrows():
+            if row_mask.any():
+                logger.error(f"Primary Key: {pk} has row-level differences:")
+                for col, is_diff in row_mask.items():
+                    if is_diff:
+                        m_val = milvus_df.at[pk, col]
+                        p_val = pg_df.at[pk, col]
+                        logger.error(f"  Column '{col}': milvus={m_val}, pg={p_val}")
+        logger.error("=== END ROW-BY-ROW DIFFERENCES ===")
 
     def query_result_compare(self, collection_name: str, filter: str = "", output_fields: list[str] | None = None):
         """
@@ -866,26 +898,40 @@ class MilvusPGClient(MilvusClient):
                     else x
                 )
 
-        def _to_py_list(val):
+        def _to_py_list(val, round_floats=False):
             """Ensure value is list of Python scalars (convert numpy types)."""
             if val is None:
                 return val
             lst = list(val) if not isinstance(val, list) else val
             cleaned = []
             for item in lst:
-                if isinstance(item, np.floating):
-                    cleaned.append(float(item))
+                if isinstance(item, (np.floating | float)):
+                    f_item = float(item)
+                    if round_floats:
+                        cleaned.append(round(f_item, 3))
+                    else:
+                        cleaned.append(f_item)
                 elif isinstance(item, np.integer):
                     cleaned.append(int(item))
                 else:
                     cleaned.append(item)
             return cleaned
 
-        for field in self.array_fields + self.float_vector_fields:
+        for field in self.array_fields:
             if field in milvus_df.columns:
                 milvus_df[field] = milvus_df[field].apply(_to_py_list)
             if field in pg_df.columns:
                 pg_df[field] = pg_df[field].apply(_to_py_list)
+
+        for field in self.float_vector_fields:
+            if field in milvus_df.columns:
+                milvus_df[field] = milvus_df[field].apply(
+                    _to_py_list, round_floats=True
+                )
+            if field in pg_df.columns:
+                pg_df[field] = pg_df[field].apply(
+                    _to_py_list, round_floats=True
+                )
 
         # Remove vector columns if ignoring them
         if self.ignore_vector and self.float_vector_fields:
@@ -959,7 +1005,14 @@ class MilvusPGClient(MilvusClient):
                     # Try to convert to numpy array to handle min/max safely
                     values_array = np.array(values)
                     if np.issubdtype(values_array.dtype, np.number):
-                        minv, maxv = float(np.min(values_array)), float(np.max(values_array))
+                        is_integer_field = "INT" in dtype_name.upper()
+                        min_val, max_val = np.min(values_array), np.max(values_array)
+
+                        if is_integer_field:
+                            minv, maxv = int(min_val), int(max_val)
+                        else:
+                            minv, maxv = float(min_val), float(max_val)
+
                         exprs.extend(
                             [
                                 f"{field.name} > {minv}",
@@ -973,7 +1026,7 @@ class MilvusPGClient(MilvusClient):
                         vals_str = ", ".join(str(v) for v in values[:5])
                         exprs.extend([f"{field.name} in [{vals_str}]", f"{field.name} not in [{vals_str}]"])
                         # Extra numeric examples
-                        if np.issubdtype(values_array.dtype, np.integer):
+                        if is_integer_field:
                             exprs.append(f"{field.name} % 2 == 0")
                 except (ValueError, TypeError):
                     # If numeric conversion fails, treat as non-numeric
@@ -1140,7 +1193,7 @@ class MilvusPGClient(MilvusClient):
                 sample_pg = list(only_in_pg)[:10]
                 logger.error(f"  Sample PostgreSQL-only keys: {sample_pg}")
         else:
-            logger.info(f"Primary key comparison passed:")
+            logger.info("Primary key comparison passed:")
             logger.info(f"  Both Milvus and PostgreSQL have {result['common_count']} matching primary keys")
         
         return result

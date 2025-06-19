@@ -8,10 +8,10 @@
 3. 在 entity_compare 中启用主键比较功能
 """
 
-import os
 import random
 import time
-from pymilvus import CollectionSchema, FieldSchema, DataType
+
+from pymilvus import CollectionSchema, DataType, FieldSchema
 from pymilvus.milvus_client import IndexParams
 
 from pymilvus_pg import MilvusPGClient
@@ -87,7 +87,7 @@ def demonstrate_pk_operations(client: MilvusPGClient, collection_name: str):
     
     # 2. 比较主键差异
     logger.info("\n=== 2. 比较 Milvus 和 PostgreSQL 的主键差异 ===")
-    pk_comparison = client.compare_primary_keys(collection_name)
+    client.compare_primary_keys(collection_name)
     
     # 3. 模拟一些数据不一致的情况
     logger.info("\n=== 3. 模拟数据不一致情况 ===")
