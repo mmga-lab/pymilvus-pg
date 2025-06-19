@@ -1,0 +1,34 @@
+name: Lint
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+
+    - name: Install PDM
+      run: |
+        pip install pdm
+
+    - name: Install dependencies
+      run: |
+        pdm install --dev
+
+    - name: Run ruff linting
+      run: |
+        pdm run ruff check src/ tests/ --output-format=github
+
+    - name: Run ruff formatting check
+      run: |
+        pdm run ruff format --check src/ tests/ 
