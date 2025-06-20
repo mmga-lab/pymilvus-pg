@@ -84,6 +84,8 @@ class MilvusPGClient(MilvusClient):
 
         # Initialize parent MilvusClient
         super().__init__(*args, **kwargs)
+        self.uri = uri
+        self.token = token
         
         # Connect to Milvus
         logger.debug(f"Connecting to Milvus with URI: {uri}")
@@ -131,8 +133,9 @@ class MilvusPGClient(MilvusClient):
             The collection schema from Milvus
         """
         logger.debug(f"Retrieving schema for collection: {collection_name}")
-        c = Collection(collection_name)
-        schema = c.schema
+        temp_client = MilvusClient(uri=self.uri, token=self.token)
+        schema_info = temp_client.describe_collection(collection_name)
+        schema = CollectionSchema.construct_from_dict(schema_info)
         
         # Reset field caches for the new collection
         self.primary_field = ""
