@@ -29,7 +29,7 @@ import psycopg2
 from deepdiff import DeepDiff
 from psycopg2.extensions import connection as PGConnection
 from psycopg2.extras import execute_values
-from pymilvus import Collection, CollectionSchema, DataType, MilvusClient, connections
+from pymilvus import CollectionSchema, DataType, MilvusClient, connections
 
 from .logger_config import logger
 
