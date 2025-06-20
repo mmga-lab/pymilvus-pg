@@ -9,6 +9,7 @@ import statistics
 import time
 
 import pytest
+from pymilvus import DataType
 
 from tests.test_utils import SchemaBuilder, TestCollectionManager, TestDataGenerator
 

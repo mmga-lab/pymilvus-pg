@@ -319,7 +319,7 @@ class TestMilvusPGClientEdgeCases:
         collection_name = created_collection
         
         # Test empty list
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             test_client.insert(collection_name, [])
 
     def test_invalid_filter_expression(self, test_client, created_collection, sample_data):
@@ -343,8 +343,8 @@ class TestMilvusPGClientEdgeCases:
         """Test operations on non-existent collection."""
         nonexistent_collection = "nonexistent_collection_12345"
         
-        with pytest.raises(Exception):
+        with pytest.raises((ValueError, RuntimeError)):
             test_client.query(nonexistent_collection)
             
-        with pytest.raises(Exception):
+        with pytest.raises((ValueError, RuntimeError)):
             test_client.count(nonexistent_collection) 
