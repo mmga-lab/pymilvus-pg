@@ -14,10 +14,10 @@ class TestLoggerConfig:
     def test_logger_exists(self):
         """Test that logger instance exists and is properly configured."""
         assert logger is not None
-        assert hasattr(logger, 'info')
-        assert hasattr(logger, 'debug')
-        assert hasattr(logger, 'warning')
-        assert hasattr(logger, 'error')
+        assert hasattr(logger, "info")
+        assert hasattr(logger, "debug")
+        assert hasattr(logger, "warning")
+        assert hasattr(logger, "error")
 
     def test_set_logger_level_info(self):
         """Test setting logger level to INFO."""
@@ -58,7 +58,7 @@ class TestLoggerConfig:
     def test_logger_message_formatting(self):
         """Test that logger properly formats messages."""
         test_message = "Test message with formatting: {value}"
-        
+
         # These should not raise exceptions
         logger.info(test_message, value=123)
         logger.debug("Debug message with multiple params: %s, %d", "string", 42)
@@ -70,4 +70,4 @@ class TestLoggerConfig:
             raise ValueError("Test exception for logging")
         except ValueError as e:
             logger.error("Exception occurred: %s", str(e))
-            logger.exception("Exception with traceback") 
+            logger.exception("Exception with traceback")

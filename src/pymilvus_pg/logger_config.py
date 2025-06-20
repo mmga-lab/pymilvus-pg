@@ -67,10 +67,10 @@ logger.add(
 def set_logger_level(level: str):
     """
     Dynamically adjust the log level for both console and file outputs.
-    
+
     This function allows runtime adjustment of logging levels, useful for
     debugging or when more verbose output is needed.
-    
+
     Parameters
     ----------
     level : str
@@ -80,15 +80,15 @@ def set_logger_level(level: str):
         - 'WARNING': Warning messages for potentially harmful situations
         - 'ERROR': Error messages for serious problems
         - 'CRITICAL': Critical messages for very serious errors
-        
+
     Note
     ----
-    This function recreates all log handlers with the new level. 
+    This function recreates all log handlers with the new level.
     The file handler maintains DEBUG level to preserve comprehensive logging.
     """
     # Remove existing handlers
     logger.remove()
-    
+
     # Recreate console handler with new level
     logger.add(
         sys.stderr,
@@ -118,7 +118,7 @@ def set_logger_level(level: str):
 def get_log_file_path() -> Path:
     """
     Get the current log file path.
-    
+
     Returns
     -------
     Path
@@ -130,7 +130,7 @@ def get_log_file_path() -> Path:
 def get_log_directory() -> Path:
     """
     Get the log directory path.
-    
+
     Returns
     -------
     Path

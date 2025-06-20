@@ -23,14 +23,10 @@ class TestFullWorkflow:
     def test_complete_workflow(self, milvus_uri, pg_conn_str):
         """Test the complete workflow as shown in the demo."""
         # Initialize client
-        client = MilvusPGClient(
-            uri=milvus_uri,
-            pg_conn_str=pg_conn_str,
-            ignore_vector=False
-        )
-        
+        client = MilvusPGClient(uri=milvus_uri, pg_conn_str=pg_conn_str, ignore_vector=False)
+
         collection_name = f"integration_test_{int(time.time() * 1000)}"
-        
+
         try:
             # 1. Create schema
             schema = client.create_schema()
@@ -62,20 +58,20 @@ class TestFullWorkflow:
                     "age": 20 + i,
                     "score": 85.5 + i * 0.5,
                     "is_active": i % 2 == 0,
-                    "json_field": {"category": f"cat_{i%3}", "value": i * 10},
+                    "json_field": {"category": f"cat_{i % 3}", "value": i * 10},
                     "array_field": [i, i + 1, i + 2],
-                    "embedding": [random.random() for _ in range(8)]
+                    "embedding": [random.random() for _ in range(8)],
                 }
                 for i in range(20)
             ]
-            
+
             client.insert(collection_name, initial_data)
             time.sleep(2)  # Allow time for synchronization
 
             # 6. Verify insert
             count_result = client.count(collection_name)
-            assert count_result['milvus_count'] == 20
-            assert count_result['pg_count'] == 20
+            assert count_result["milvus_count"] == 20
+            assert count_result["pg_count"] == 20
 
             # 7. Query data
             query_results = client.query(collection_name, filter_expression="age > 25")
@@ -88,8 +84,8 @@ class TestFullWorkflow:
 
             # 9. Verify deletion
             count_after_delete = client.count(collection_name)
-            assert count_after_delete['milvus_count'] == 15
-            assert count_after_delete['pg_count'] == 15
+            assert count_after_delete["milvus_count"] == 15
+            assert count_after_delete["pg_count"] == 15
 
             # 10. Upsert data (update existing + insert new)
             upsert_data = [
@@ -101,7 +97,7 @@ class TestFullWorkflow:
                     "is_active": False,
                     "json_field": {"updated": True, "timestamp": int(time.time())},
                     "array_field": [999, 1000, 1001],
-                    "embedding": [random.random() for _ in range(8)]
+                    "embedding": [random.random() for _ in range(8)],
                 },
                 {
                     "id": 100,  # Insert new
@@ -111,46 +107,43 @@ class TestFullWorkflow:
                     "is_active": True,
                     "json_field": {"new": True, "category": "premium"},
                     "array_field": [100, 101, 102],
-                    "embedding": [random.random() for _ in range(8)]
-                }
+                    "embedding": [random.random() for _ in range(8)],
+                },
             ]
-            
+
             client.upsert(collection_name, upsert_data)
             time.sleep(1)
 
             # 11. Verify upsert
             count_after_upsert = client.count(collection_name)
-            assert count_after_upsert['milvus_count'] == 16  # 15 + 1 new
-            assert count_after_upsert['pg_count'] == 16
+            assert count_after_upsert["milvus_count"] == 16  # 15 + 1 new
+            assert count_after_upsert["pg_count"] == 16
 
             # 12. Export data from PostgreSQL
             exported_data = client.export(collection_name)
             assert len(exported_data) == 16
 
             # 13. Test query result comparison
-            comparison_result = client.query_result_compare(
-                collection_name, 
-                filter_expression="age > 30"
-            )
-            assert comparison_result['is_equal'] is True
+            comparison_result = client.query_result_compare(collection_name, filter_expression="age > 30")
+            assert comparison_result["is_equal"] is True
 
             # 14. Test entity comparison
             entity_comparison = client.entity_compare(collection_name, batch_size=5)
-            assert entity_comparison['failed_batches'] == 0
+            assert entity_comparison["failed_batches"] == 0
 
             # 15. Test primary key comparison
             pk_comparison = client.compare_primary_keys(collection_name)
-            assert len(pk_comparison['milvus_only']) == 0
-            assert len(pk_comparison['pg_only']) == 0
-            assert len(pk_comparison['common']) == 16
+            assert len(pk_comparison["milvus_only"]) == 0
+            assert len(pk_comparison["pg_only"]) == 0
+            assert len(pk_comparison["common"]) == 16
 
             # 16. Test filter generation and validation
             generated_filters = client.generate_milvus_filter(collection_name, num_samples=3)
             assert len(generated_filters) >= 1
-            
+
             for filter_expr in generated_filters[:2]:  # Test first 2 filters
                 filter_comparison = client.query_result_compare(collection_name, filter_expr)
-                assert filter_comparison['is_equal'] is True
+                assert filter_comparison["is_equal"] is True
 
         finally:
             # Cleanup
@@ -158,8 +151,8 @@ class TestFullWorkflow:
                 client.drop_collection(collection_name)
             except Exception:
                 pass  # Collection might already be dropped
-            
-            if hasattr(client, 'pg_conn') and client.pg_conn:
+
+            if hasattr(client, "pg_conn") and client.pg_conn:
                 client.pg_conn.close()
 
 
@@ -170,14 +163,10 @@ class TestLargeDatasetWorkflow:
 
     def test_large_dataset_operations(self, milvus_uri, pg_conn_str):
         """Test operations with a larger dataset."""
-        client = MilvusPGClient(
-            uri=milvus_uri,
-            pg_conn_str=pg_conn_str,
-            ignore_vector=False
-        )
-        
+        client = MilvusPGClient(uri=milvus_uri, pg_conn_str=pg_conn_str, ignore_vector=False)
+
         collection_name = f"large_test_{int(time.time() * 1000)}"
-        
+
         try:
             # Create schema
             schema = client.create_schema()
@@ -188,7 +177,7 @@ class TestLargeDatasetWorkflow:
 
             # Create and setup collection
             client.create_collection(collection_name, schema)
-            
+
             index_params = IndexParams()
             index_params.add_index("embedding", metric_type="L2", index_type="IVF_FLAT", params={"nlist": 128})
             client.create_index(collection_name, index_params)
@@ -198,14 +187,16 @@ class TestLargeDatasetWorkflow:
             large_dataset = []
             batch_size = 500
             total_records = 1000
-            
+
             for i in range(total_records):
-                large_dataset.append({
-                    "id": i,
-                    "name": f"large_entity_{i}",
-                    "age": 18 + (i % 50),
-                    "embedding": [random.random() for _ in range(128)]
-                })
+                large_dataset.append(
+                    {
+                        "id": i,
+                        "name": f"large_entity_{i}",
+                        "age": 18 + (i % 50),
+                        "embedding": [random.random() for _ in range(128)],
+                    }
+                )
 
             # Insert in batches
             for start_idx in range(0, total_records, batch_size):
@@ -218,17 +209,13 @@ class TestLargeDatasetWorkflow:
 
             # Verify total count
             count_result = client.count(collection_name)
-            assert count_result['milvus_count'] == total_records
-            assert count_result['pg_count'] == total_records
+            assert count_result["milvus_count"] == total_records
+            assert count_result["pg_count"] == total_records
 
             # Test batch entity comparison
-            entity_comparison = client.entity_compare(
-                collection_name, 
-                batch_size=100,
-                full_scan=True
-            )
-            assert entity_comparison['failed_batches'] == 0
-            assert entity_comparison['total_batches'] > 0
+            entity_comparison = client.entity_compare(collection_name, batch_size=100, full_scan=True)
+            assert entity_comparison["failed_batches"] == 0
+            assert entity_comparison["total_batches"] > 0
 
         finally:
             # Cleanup
@@ -236,8 +223,8 @@ class TestLargeDatasetWorkflow:
                 client.drop_collection(collection_name)
             except Exception:
                 pass
-            
-            if hasattr(client, 'pg_conn') and client.pg_conn:
+
+            if hasattr(client, "pg_conn") and client.pg_conn:
                 client.pg_conn.close()
 
 
@@ -247,64 +234,52 @@ class TestErrorHandlingIntegration:
 
     def test_connection_recovery(self, milvus_uri, pg_conn_str):
         """Test recovery from connection issues."""
-        client = MilvusPGClient(
-            uri=milvus_uri,
-            pg_conn_str=pg_conn_str
-        )
-        
+        client = MilvusPGClient(uri=milvus_uri, pg_conn_str=pg_conn_str)
+
         # Test that client can handle basic operations
         collection_name = f"error_test_{int(time.time() * 1000)}"
-        
+
         try:
             schema = client.create_schema()
             schema.add_field("id", DataType.INT64, is_primary=True, auto_id=False)
             schema.add_field("name", DataType.VARCHAR, max_length=100)
             schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=8)
-            
+
             client.create_collection(collection_name, schema)
-            
+
             # Test operations continue to work
-            test_data = [
-                {
-                    "id": 1,
-                    "name": "test_entity",
-                    "embedding": [random.random() for _ in range(8)]
-                }
-            ]
-            
+            test_data = [{"id": 1, "name": "test_entity", "embedding": [random.random() for _ in range(8)]}]
+
             client.insert(collection_name, test_data)
             time.sleep(1)
-            
+
             count_result = client.count(collection_name)
-            assert count_result['milvus_count'] == 1
-            
+            assert count_result["milvus_count"] == 1
+
         finally:
             try:
                 client.drop_collection(collection_name)
             except Exception:
                 pass
-            
-            if hasattr(client, 'pg_conn') and client.pg_conn:
+
+            if hasattr(client, "pg_conn") and client.pg_conn:
                 client.pg_conn.close()
 
     def test_data_consistency_after_errors(self, milvus_uri, pg_conn_str):
         """Test data consistency is maintained after error conditions."""
-        client = MilvusPGClient(
-            uri=milvus_uri,
-            pg_conn_str=pg_conn_str
-        )
-        
+        client = MilvusPGClient(uri=milvus_uri, pg_conn_str=pg_conn_str)
+
         collection_name = f"consistency_test_{int(time.time() * 1000)}"
-        
+
         try:
             # Setup collection
             schema = client.create_schema()
             schema.add_field("id", DataType.INT64, is_primary=True, auto_id=False)
             schema.add_field("name", DataType.VARCHAR, max_length=100)
             schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=8)
-            
+
             client.create_collection(collection_name, schema)
-            
+
             index_params = IndexParams()
             index_params.add_index("embedding", metric_type="L2", index_type="IVF_FLAT", params={"nlist": 128})
             client.create_index(collection_name, index_params)
@@ -312,30 +287,26 @@ class TestErrorHandlingIntegration:
 
             # Insert valid data
             valid_data = [
-                {
-                    "id": i,
-                    "name": f"valid_entity_{i}",
-                    "embedding": [random.random() for _ in range(8)]
-                }
+                {"id": i, "name": f"valid_entity_{i}", "embedding": [random.random() for _ in range(8)]}
                 for i in range(5)
             ]
-            
+
             client.insert(collection_name, valid_data)
             time.sleep(1)
 
             # Verify consistency after successful operations
             count_result = client.count(collection_name)
-            assert count_result['milvus_count'] == count_result['pg_count']
-            
+            assert count_result["milvus_count"] == count_result["pg_count"]
+
             pk_comparison = client.compare_primary_keys(collection_name)
-            assert len(pk_comparison['milvus_only']) == 0
-            assert len(pk_comparison['pg_only']) == 0
+            assert len(pk_comparison["milvus_only"]) == 0
+            assert len(pk_comparison["pg_only"]) == 0
 
         finally:
             try:
                 client.drop_collection(collection_name)
             except Exception:
                 pass
-            
-            if hasattr(client, 'pg_conn') and client.pg_conn:
-                client.pg_conn.close() 
+
+            if hasattr(client, "pg_conn") and client.pg_conn:
+                client.pg_conn.close()

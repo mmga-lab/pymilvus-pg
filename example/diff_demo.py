@@ -1,6 +1,7 @@
 """
 This script is used to verify the diff function of milvus pg.
 """
+
 import os
 import random
 import time
@@ -86,4 +87,3 @@ logger.info(f"--- Drop collection: {collection_name} ---")
 milvus_client.drop_collection(collection_name)
 
 logger.info("--- Diff demo finished ---")
-

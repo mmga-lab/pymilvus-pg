@@ -84,7 +84,6 @@ def _insert_op(client: MilvusClient, collection: str):
         # Exception is caught to prevent thread exit
 
 
-
 def _delete_op(client: MilvusClient, collection: str):
     """Delete operation with exception handling to ensure thread stability."""
     global _global_id
@@ -102,7 +101,6 @@ def _delete_op(client: MilvusClient, collection: str):
         # Exception is caught to prevent thread exit
 
 
-
 def _upsert_op(client: MilvusClient, collection: str):
     """Upsert operation with exception handling to ensure thread stability."""
     global _global_id
@@ -116,7 +114,6 @@ def _upsert_op(client: MilvusClient, collection: str):
     except Exception as e:
         logger.error(f"[UPSERT] Exception occurred: {e}")
         # Exception is caught to prevent thread exit
-
 
 
 OPERATIONS = [_insert_op, _delete_op, _upsert_op]

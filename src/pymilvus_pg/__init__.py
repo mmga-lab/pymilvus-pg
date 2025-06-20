@@ -12,10 +12,10 @@ Main Components:
 
 Example:
     >>> from pymilvus_pg import MilvusPGClient, logger, set_logger_level
-    >>> 
+    >>>
     >>> # Configure logging level
     >>> set_logger_level("INFO")
-    >>> 
+    >>>
     >>> # Initialize client
     >>> client = MilvusPGClient(
     ...     uri="http://localhost:19530",

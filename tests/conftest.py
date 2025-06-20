@@ -30,14 +30,10 @@ def pg_conn_str():
 @pytest.fixture(scope="session")
 def test_client(milvus_uri, pg_conn_str):
     """Create a test client instance."""
-    client = MilvusPGClient(
-        uri=milvus_uri,
-        pg_conn_str=pg_conn_str,
-        ignore_vector=False
-    )
+    client = MilvusPGClient(uri=milvus_uri, pg_conn_str=pg_conn_str, ignore_vector=False)
     yield client
     # Cleanup after tests
-    if hasattr(client, 'pg_conn') and client.pg_conn:
+    if hasattr(client, "pg_conn") and client.pg_conn:
         client.pg_conn.close()
 
 
@@ -77,6 +73,7 @@ def complex_schema(test_client):
 def sample_data():
     """Generate sample data for testing."""
     import random
+
     return [
         {
             "id": i,
@@ -84,9 +81,9 @@ def sample_data():
             "age": 20 + i,
             "score": 85.5 + i * 0.5,
             "is_active": i % 2 == 0,
-            "json_field": {"category": f"cat_{i%3}", "value": i * 10},
+            "json_field": {"category": f"cat_{i % 3}", "value": i * 10},
             "array_field": [i, i + 1, i + 2],
-            "embedding": [random.random() for _ in range(8)]
+            "embedding": [random.random() for _ in range(8)],
         }
         for i in range(10)
     ]
@@ -97,17 +94,17 @@ def created_collection(test_client, test_collection_name, complex_schema):
     """Create a test collection and clean it up after the test."""
     # Create collection
     test_client.create_collection(test_collection_name, complex_schema)
-    
+
     # Create index
     index_params = IndexParams()
     index_params.add_index("embedding", metric_type="L2", index_type="IVF_FLAT", params={"nlist": 128})
     test_client.create_index(test_collection_name, index_params)
-    
+
     # Load collection
     test_client.load_collection(test_collection_name)
-    
+
     yield test_collection_name
-    
+
     # Cleanup
     try:
         test_client.drop_collection(test_collection_name)
@@ -125,9 +122,5 @@ def setup_test_env():
 
 def pytest_configure(config):
     """Configure pytest with custom markers."""
-    config.addinivalue_line(
-        "markers", "integration: mark test as integration test requiring external services"
-    )
-    config.addinivalue_line(
-        "markers", "slow: mark test as slow running"
-    ) 
+    config.addinivalue_line("markers", "integration: mark test as integration test requiring external services")
+    config.addinivalue_line("markers", "slow: mark test as slow running")
