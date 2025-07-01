@@ -6,11 +6,11 @@ authors = [
     {name = "zhuwenxing", email = "wenxing.zhu@zilliz.com"},
 ]
 dependencies = [
-    "pymilvus>=2.5.10",
-    "psycopg2-binary>=2.9.9",
-    "deepdiff>=8.5.0",
-    "loguru>=0.7.0",
-    "dotenv>=0.9.9",
+    "pymilvus>=2.5.10,<3.0.0",
+    "psycopg2-binary>=2.9.9,<3.0.0",
+    "deepdiff>=8.5.0,<9.0.0",
+    "loguru>=0.7.0,<1.0.0",
+    "python-dotenv>=0.19.0,<2.0.0",
 ]
 requires-python = ">=3.10"
 readme = "README.md"
@@ -74,3 +74,45 @@ select = [
     "UP"
 ]
 ignore = ["E501"]
+
+# MyPy configuration for type checking
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+ignore_missing_imports = true
+pretty = true
+show_error_codes = true
+show_error_context = true
+show_column_numbers = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/tests/*", "*/test_*.py"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"

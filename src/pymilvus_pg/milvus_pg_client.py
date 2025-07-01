@@ -20,7 +20,9 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import wraps
 from typing import Any
 
 import numpy as np
@@ -31,7 +33,15 @@ from psycopg2.extensions import connection as PGConnection
 from psycopg2.extras import execute_values
 from pymilvus import CollectionSchema, DataType, MilvusClient, connections
 
+from .exceptions import ConnectionError as MilvusPGConnectionError
+from .exceptions import FilterConversionError, SyncError
 from .logger_config import logger
+from .types import (
+    EntityData,
+    FilterExpression,
+    OutputFields,
+    PrimaryKeyList,
+)
 
 __all__ = ["MilvusPGClient"]
 
@@ -75,7 +85,7 @@ class MilvusPGClient(MilvusClient):
         List of FLOAT_VECTOR field names
     """
 
-    def __init__(self, *args: Any, **kwargs: Any):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         # Extract custom parameters before calling parent constructor
         self.ignore_vector: bool = kwargs.pop("ignore_vector", False)
         self.pg_conn_str: str = kwargs.pop("pg_conn_str")
@@ -99,7 +109,7 @@ class MilvusPGClient(MilvusClient):
             logger.debug("PostgreSQL connection established successfully")
         except Exception as e:
             logger.error(f"Failed to connect to PostgreSQL: {e}")
-            raise
+            raise MilvusPGConnectionError(f"Failed to connect to PostgreSQL: {e}") from e
 
         # Initialize schema-related caches
         self.primary_field: str = ""
@@ -201,7 +211,7 @@ class MilvusPGClient(MilvusClient):
     # ------------------------------------------------------------------
     # Collection DDL operations
     # ------------------------------------------------------------------
-    def create_collection(self, collection_name: str, schema: CollectionSchema, **kwargs: Any):
+    def create_collection(self, collection_name: str, schema: CollectionSchema, **kwargs: Any) -> Any:
         """
         Create a collection in both PostgreSQL and Milvus.
 
@@ -251,7 +261,7 @@ class MilvusPGClient(MilvusClient):
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"Failed to create PostgreSQL table: {e}")
-            raise RuntimeError(f"Failed to create PG table: {e}") from e
+            raise SyncError(f"Failed to create PostgreSQL table: {e}") from e
 
         # Create collection in Milvus
         # Pass schema as keyword argument to align with MilvusClient signature
@@ -264,7 +274,7 @@ class MilvusPGClient(MilvusClient):
             logger.error(f"Failed to create Milvus collection: {e}")
             raise
 
-    def drop_collection(self, collection_name: str):
+    def drop_collection(self, collection_name: str) -> Any:
         """
         Drop a collection from both PostgreSQL and Milvus.
 
@@ -290,7 +300,7 @@ class MilvusPGClient(MilvusClient):
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"Failed to drop PostgreSQL table: {e}")
-            raise RuntimeError(f"Failed to drop PG table: {e}") from e
+            raise SyncError(f"Failed to drop PostgreSQL table: {e}") from e
 
         # Drop Milvus collection
         milvus_start = time.time()
@@ -306,19 +316,18 @@ class MilvusPGClient(MilvusClient):
     # Write operations with transactional shadow writes
     # ------------------------------------------------------------------
     @staticmethod
-    def _synchronized(method):
+    def _synchronized(method: Callable[..., Any]) -> Callable[..., Any]:
         """Decorator to run method under instance-level lock for thread safety."""
-        from functools import wraps
 
         @wraps(method)
-        def _wrapper(self, *args, **kwargs):
+        def _wrapper(self: MilvusPGClient, *args: Any, **kwargs: Any) -> Any:
             with self._lock:
                 return method(self, *args, **kwargs)
 
         return _wrapper
 
     @_synchronized
-    def insert(self, collection_name: str, data: list[dict[str, Any]], **kwargs: Any):
+    def insert(self, collection_name: str, data: EntityData, **kwargs: Any) -> Any:
         """
         Insert data into both Milvus and PostgreSQL within a transaction.
 
@@ -383,7 +392,7 @@ class MilvusPGClient(MilvusClient):
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"PostgreSQL insert failed for collection '{collection_name}': {e}")
-            raise RuntimeError(f"PostgreSQL insert failed: {e}") from e
+            raise SyncError(f"PostgreSQL insert failed: {e}") from e
 
         try:
             # Execute Milvus insert operation
@@ -401,10 +410,10 @@ class MilvusPGClient(MilvusClient):
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"Milvus insert failed for collection '{collection_name}', PostgreSQL rolled back: {e}")
-            raise RuntimeError(f"Milvus insert failed, PG rolled back: {e}") from e
+            raise SyncError(f"Milvus insert failed, PostgreSQL rolled back: {e}") from e
 
     @_synchronized
-    def upsert(self, collection_name: str, data: list[dict[str, Any]], **kwargs: Any):
+    def upsert(self, collection_name: str, data: EntityData, **kwargs: Any) -> Any:
         """
         Upsert data into both Milvus and PostgreSQL within a transaction.
 
@@ -465,7 +474,7 @@ class MilvusPGClient(MilvusClient):
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"PostgreSQL upsert failed for collection '{collection_name}': {e}")
-            raise RuntimeError(f"PostgreSQL upsert failed: {e}") from e
+            raise SyncError(f"PostgreSQL upsert failed: {e}") from e
 
         try:
             # Execute Milvus upsert operation
@@ -483,10 +492,10 @@ class MilvusPGClient(MilvusClient):
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"Milvus upsert failed for collection '{collection_name}', PostgreSQL rolled back: {e}")
-            raise RuntimeError(f"Milvus upsert failed, PG rolled back: {e}") from e
+            raise SyncError(f"Milvus upsert failed, PostgreSQL rolled back: {e}") from e
 
     @_synchronized
-    def delete(self, collection_name: str, ids: list[int | str], **kwargs: Any):
+    def delete(self, collection_name: str, ids: PrimaryKeyList, **kwargs: Any) -> Any:
         """
         Delete records from both Milvus and PostgreSQL within a transaction.
 
@@ -523,7 +532,7 @@ class MilvusPGClient(MilvusClient):
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"PostgreSQL delete failed for collection '{collection_name}': {e}")
-            raise RuntimeError(f"PostgreSQL delete failed: {e}") from e
+            raise SyncError(f"PostgreSQL delete failed: {e}") from e
 
         try:
             # Execute Milvus delete
@@ -541,13 +550,18 @@ class MilvusPGClient(MilvusClient):
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"Milvus delete failed for collection '{collection_name}', PostgreSQL rolled back: {e}")
-            raise RuntimeError(f"Milvus delete failed, PG rolled back: {e}") from e
+            raise SyncError(f"Milvus delete failed, PostgreSQL rolled back: {e}") from e
 
     # ------------------------------------------------------------------
     # Read operations and validation helpers
     # ------------------------------------------------------------------
     @_synchronized
-    def query(self, collection_name: str, filter: str = "", output_fields: list[str] | None = None):
+    def query(
+        self,
+        collection_name: str,
+        filter: FilterExpression = "",
+        output_fields: OutputFields | None = None,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
         Query data from both Milvus and PostgreSQL for comparison.
 
@@ -609,7 +623,7 @@ class MilvusPGClient(MilvusClient):
         return milvus_aligned, pg_aligned
 
     @_synchronized
-    def export(self, collection_name: str):
+    def export(self, collection_name: str) -> pd.DataFrame:
         """
         Export all data from PostgreSQL table as DataFrame.
 
@@ -639,7 +653,7 @@ class MilvusPGClient(MilvusClient):
         return df
 
     @_synchronized
-    def count(self, collection_name: str):
+    def count(self, collection_name: str) -> dict[str, int]:
         """
         Get record counts from both Milvus and PostgreSQL.
 
@@ -694,7 +708,7 @@ class MilvusPGClient(MilvusClient):
     # ------------------------------------------------------------------
     # Data comparison and validation methods
     # ------------------------------------------------------------------
-    def _compare_df(self, milvus_df: pd.DataFrame, pg_df: pd.DataFrame):
+    def _compare_df(self, milvus_df: pd.DataFrame, pg_df: pd.DataFrame) -> DeepDiff:
         """
         Compare two DataFrames using DeepDiff for detailed difference detection.
 
@@ -735,7 +749,7 @@ class MilvusPGClient(MilvusClient):
 
         return diff
 
-    def _print_detailed_diff(self, milvus_df: pd.DataFrame, pg_df: pd.DataFrame):
+    def _print_detailed_diff(self, milvus_df: pd.DataFrame, pg_df: pd.DataFrame) -> None:
         """
         Print detailed differences with primary key information for debugging.
 
@@ -763,7 +777,12 @@ class MilvusPGClient(MilvusClient):
                         logger.error(f"  Column '{col}': milvus={m_val}, pg={p_val}")
         logger.error("=== END ROW-BY-ROW DIFFERENCES ===")
 
-    def query_result_compare(self, collection_name: str, filter: str = "", output_fields: list[str] | None = None):
+    def query_result_compare(
+        self,
+        collection_name: str,
+        filter: FilterExpression = "",
+        output_fields: OutputFields | None = None,
+    ) -> DeepDiff:
         """
         Compare query results between Milvus and PostgreSQL.
 
@@ -812,7 +831,7 @@ class MilvusPGClient(MilvusClient):
     # ------------------------------------------------------------------
     # Internal helpers for query alignment
     # ------------------------------------------------------------------
-    def _milvus_filter_to_sql(self, filter_expr: str) -> str:  # noqa: D401
+    def _milvus_filter_to_sql(self, filter_expr: FilterExpression) -> str:
         """Convert simple Milvus filter to PostgreSQL SQL.
 
         Current support:
@@ -844,13 +863,13 @@ class MilvusPGClient(MilvusClient):
         expr = re.sub(r"(?<![!<>])==", "=", expr)
 
         # 3. IN list: field in [1,2] -> field IN (1,2)
-        def _in_repl(match):
+        def _in_repl(match: Any) -> str:
             field = match.group(1)
             values = match.group(2)
             try:
                 py_list = eval(values)
-            except Exception:
-                py_list = []
+            except Exception as e:
+                raise FilterConversionError(filter_expr, f"Invalid list format: {values}") from e
             sql_list = ", ".join([f"'{v}'" if isinstance(v, str) else str(v) for v in py_list])
             return f"{field} IN ({sql_list})"
 
@@ -874,7 +893,7 @@ class MilvusPGClient(MilvusClient):
 
         return expr
 
-    def _align_df(self, milvus_df: pd.DataFrame, pg_df: pd.DataFrame):
+    def _align_df(self, milvus_df: pd.DataFrame, pg_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Align two DataFrames on primary key and common columns, normalise JSON/ARRAY types."""
         if (
             self.primary_field
@@ -905,7 +924,7 @@ class MilvusPGClient(MilvusClient):
                     else x
                 )
 
-        def _to_py_list(val, round_floats=False):
+        def _to_py_list(val: Any, round_floats: bool = False) -> Any:
             """Ensure value is list of Python scalars (convert numpy types)."""
             if val is None:
                 return val
@@ -957,7 +976,7 @@ class MilvusPGClient(MilvusClient):
     # Sampling & filter generation helpers (port from DuckDB client)
     # ------------------------------------------------------------------
     @_synchronized
-    def sample_data(self, collection_name: str, num_samples: int = 100):
+    def sample_data(self, collection_name: str, num_samples: int = 100) -> pd.DataFrame:
         """Sample rows from PostgreSQL table for the given collection."""
         self._get_schema(collection_name)
         with self.pg_conn.cursor() as cursor:
@@ -1014,7 +1033,7 @@ class MilvusPGClient(MilvusClient):
                         if is_integer_field:
                             minv, maxv = int(min_val), int(max_val)
                         else:
-                            minv, maxv = float(min_val), float(max_val)
+                            minv, maxv = int(float(min_val)), int(float(max_val))
 
                         exprs.extend(
                             [
@@ -1207,7 +1226,7 @@ class MilvusPGClient(MilvusClient):
         retry_interval: float = 5.0,
         full_scan: bool = False,
         compare_pks_first: bool = True,
-    ):
+    ) -> bool | dict[str, Any]:
         """
         Perform comprehensive comparison of entity data between Milvus and PostgreSQL.
 
@@ -1431,7 +1450,7 @@ class MilvusPGClient(MilvusClient):
             return True
 
     # ------------------------------------------------------------------
-    def __del__(self):
+    def __del__(self) -> None:
         try:
             if hasattr(self, "pg_conn"):
                 self.pg_conn.close()

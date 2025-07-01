@@ -64,7 +64,7 @@ logger.add(
 )
 
 
-def set_logger_level(level: str):
+def set_logger_level(level: str) -> None:
     """
     Dynamically adjust the log level for both console and file outputs.
 

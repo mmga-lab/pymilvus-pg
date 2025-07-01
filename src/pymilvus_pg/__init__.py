@@ -23,11 +23,61 @@ Example:
     ... )
 """
 
+from .exceptions import (
+    CollectionNotFoundError,
+    ConnectionError,
+    DataTypeMismatchError,
+    FilterConversionError,
+    MilvusPGError,
+    SchemaError,
+    SyncError,
+    TransactionError,
+    ValidationError,
+)
 from .logger_config import logger, set_logger_level
 from .milvus_pg_client import MilvusPGClient
+from .types import (
+    ComparisonResult,
+    DeleteResult,
+    EntityData,
+    FieldValue,
+    FilterExpression,
+    InsertResult,
+    OutputFields,
+    PrimaryKeyComparisonResult,
+    PrimaryKeyList,
+    PrimaryKeyType,
+    QueryResult,
+    UpsertResult,
+)
 
 __all__ = [
+    # Main client
     "MilvusPGClient",
+    # Logging
     "logger",
     "set_logger_level",
+    # Exceptions
+    "MilvusPGError",
+    "ConnectionError",
+    "SchemaError",
+    "CollectionNotFoundError",
+    "SyncError",
+    "ValidationError",
+    "FilterConversionError",
+    "TransactionError",
+    "DataTypeMismatchError",
+    # Types
+    "PrimaryKeyType",
+    "PrimaryKeyList",
+    "EntityData",
+    "FieldValue",
+    "FilterExpression",
+    "OutputFields",
+    "QueryResult",
+    "InsertResult",
+    "UpsertResult",
+    "DeleteResult",
+    "ComparisonResult",
+    "PrimaryKeyComparisonResult",
 ]
