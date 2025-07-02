@@ -1,0 +1,12 @@
+{
+  "collection_name": "comprehensive_benchmark",
+  "record_counts": [100, 500, 1000, 5000, 10000],
+  "batch_sizes": [100, 500, 1000, 2000],
+  "vector_dims": [128, 512, 1024],
+  "concurrent_workers": [1, 2, 4, 8, 16],
+  "runs_per_config": 5,
+  "ignore_vector": false,
+  "sample_vector": false,
+  "vector_sample_size": 8,
+  "warmup_runs": 2
+}

@@ -1,0 +1,12 @@
+{
+  "collection_name": "mini_benchmark",
+  "record_counts": [10],
+  "batch_sizes": [10],
+  "vector_dims": [8],
+  "concurrent_workers": [1],
+  "runs_per_config": 1,
+  "ignore_vector": false,
+  "sample_vector": false,
+  "vector_sample_size": 4,
+  "warmup_runs": 0
+}

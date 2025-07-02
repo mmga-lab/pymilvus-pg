@@ -23,9 +23,10 @@ import re
 import threading
 import time
 from collections.abc import Callable, Generator
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
 from functools import wraps
+from multiprocessing import cpu_count
 from typing import Any
 
 import numpy as np
@@ -48,6 +49,175 @@ from .types import (
 )
 
 __all__ = ["MilvusPGClient"]
+
+
+def _compare_batch_worker(
+    batch_start: int,
+    batch_pks: list,
+    batch_size: int,
+    total_pks: int,
+    collection_name: str,
+    primary_field: str,
+    ignore_vector: bool,
+    float_vector_fields: list,
+    json_fields: list,
+    array_fields: list,
+    varchar_fields: list,
+    pg_conn_str: str,
+    milvus_uri: str,
+    milvus_token: str,
+    sample_vector: bool = False,
+    vector_sample_size: int = 8,
+) -> tuple[int, bool]:
+    """
+    Worker function for multiprocessing batch comparison.
+
+    This function is separate from the class to make it picklable for multiprocessing.
+    """
+    import pandas as pd
+    import psycopg2
+    from pymilvus import MilvusClient
+
+    batch_num = batch_start // batch_size + 1
+
+    try:
+        # Create Milvus client for this process
+        milvus_client = MilvusClient(uri=milvus_uri, token=milvus_token)
+
+        # Milvus fetch
+        milvus_filter = f"{primary_field} in {list(batch_pks)}"
+        milvus_data = milvus_client.query(collection_name, filter=milvus_filter, output_fields=["*"])
+        milvus_df = pd.DataFrame(milvus_data)
+
+        # Drop vector columns for comparison if ignoring vectors
+        if ignore_vector and float_vector_fields:
+            milvus_df.drop(
+                columns=[c for c in float_vector_fields if c in milvus_df.columns],
+                inplace=True,
+                errors="ignore",
+            )
+
+        # PG fetch - use a new connection for process safety
+        pg_conn = psycopg2.connect(pg_conn_str)
+        try:
+            placeholder = ", ".join(["%s"] * len(batch_pks))
+            with pg_conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT * FROM {collection_name} WHERE {primary_field} IN ({placeholder});",
+                    batch_pks,
+                )
+                pg_rows = cursor.fetchall()
+                colnames = [desc[0] for desc in cursor.description] if cursor.description else []
+            pg_df = pd.DataFrame(pg_rows, columns=colnames or [])
+        finally:
+            pg_conn.close()
+
+        # Compare data - create minimal comparison logic
+        # Align DataFrames for comparison
+        if primary_field and primary_field in milvus_df.columns and primary_field not in milvus_df.index.names:
+            milvus_df.set_index(primary_field, inplace=True)
+        if primary_field and primary_field in pg_df.columns and primary_field not in pg_df.index.names:
+            pg_df.set_index(primary_field, inplace=True)
+
+        common_cols = [c for c in milvus_df.columns if c in pg_df.columns]
+        if common_cols:
+            milvus_df = milvus_df.loc[:, common_cols]
+            pg_df = pg_df.loc[:, common_cols]
+
+        # JSON fields normalization
+        for field in json_fields:
+            if field in pg_df.columns:
+                pg_df[field] = pg_df[field].apply(
+                    lambda x: json.loads(x) if isinstance(x, str) and x and x[0] in ["{", "[", '"'] else x
+                )
+            if field in milvus_df.columns:
+                milvus_df[field] = milvus_df[field].apply(
+                    lambda x: x
+                    if isinstance(x, dict)
+                    else json.loads(x)
+                    if isinstance(x, str) and x and x[0] in ["{", "[", '"']
+                    else x
+                )
+
+        # Array and vector fields normalization
+        def _to_py_list(val: Any, round_floats: bool = False) -> Any:
+            """Ensure value is list of Python scalars (convert numpy types)."""
+            if val is None:
+                return val
+            lst = list(val) if not isinstance(val, list) else val
+            cleaned = []
+            for item in lst:
+                import numpy as np
+
+                if isinstance(item, (np.floating | float)):
+                    f_item = float(item)
+                    if round_floats:
+                        cleaned.append(round(f_item, 3))
+                    else:
+                        cleaned.append(f_item)
+                elif isinstance(item, np.integer):
+                    cleaned.append(int(item))
+                else:
+                    cleaned.append(item)
+            return cleaned
+
+        for field in array_fields:
+            if field in milvus_df.columns:
+                milvus_df[field] = milvus_df[field].apply(_to_py_list)
+            if field in pg_df.columns:
+                pg_df[field] = pg_df[field].apply(_to_py_list)
+
+        for field in float_vector_fields:
+            if field in milvus_df.columns:
+                if sample_vector and not ignore_vector:
+                    # Apply sampling to Milvus vectors for consistent comparison
+                    def sample_vector_func(vector: list) -> list:
+                        if not isinstance(vector, list) or len(vector) == 0:
+                            return vector
+                        vector_len = len(vector)
+                        if vector_len <= vector_sample_size:
+                            return vector
+
+                        indices = [0]  # Always include first
+                        step = (vector_len - 1) / (vector_sample_size - 1)
+                        for i in range(1, vector_sample_size - 1):
+                            idx = int(round(i * step))
+                            indices.append(idx)
+                        indices.append(vector_len - 1)  # Always include last
+
+                        return [vector[i] for i in indices]
+
+                    milvus_df[field] = milvus_df[field].apply(
+                        lambda x: sample_vector_func(_to_py_list(x, round_floats=True))
+                    )
+                else:
+                    milvus_df[field] = milvus_df[field].apply(_to_py_list, round_floats=True)
+            if field in pg_df.columns:
+                pg_df[field] = pg_df[field].apply(_to_py_list, round_floats=True)
+
+        # Remove vector columns if ignoring them
+        if ignore_vector and float_vector_fields:
+            milvus_df.drop(
+                columns=[c for c in float_vector_fields if c in milvus_df.columns], inplace=True, errors="ignore"
+            )
+            pg_df.drop(columns=[c for c in float_vector_fields if c in pg_df.columns], inplace=True, errors="ignore")
+
+        shared_idx = milvus_df.index.intersection(pg_df.index)
+        milvus_aligned = milvus_df.loc[shared_idx].sort_index()
+        pg_aligned = pg_df.loc[shared_idx].sort_index()
+
+        milvus_aligned = milvus_aligned.reindex(columns=pg_aligned.columns)
+        pg_aligned = pg_aligned.reindex(columns=milvus_aligned.columns)
+
+        # Simple comparison - check if DataFrames are equal
+        has_differences = not milvus_aligned.equals(pg_aligned)
+
+        return len(batch_pks), has_differences
+
+    except Exception as e:
+        # Use print instead of logger since we're in a separate process
+        print(f"Error comparing batch {batch_num}: {e}")
+        return len(batch_pks), True
 
 
 class MilvusPGClient(MilvusClient):
@@ -1658,118 +1828,75 @@ class MilvusPGClient(MilvusClient):
     def _execute_concurrent_comparison(
         self, collection_name: str, pks: list, batch_size: int, start_time: float
     ) -> bool:
-        """Execute concurrent batch comparison of entities."""
+        """Execute concurrent batch comparison of entities using multiprocessing."""
         total_pks = len(pks)
-        max_workers = min(16, (total_pks + batch_size - 1) // batch_size)
+        # Use fewer processes than CPU cores to avoid overwhelming the system
+        max_workers = min(cpu_count() - 1, (total_pks + batch_size - 1) // batch_size, 8)
+        max_workers = max(1, max_workers)  # Ensure at least 1 worker
         compared = 0
 
-        def compare_batch(
-            batch_start: int,
-            batch_pks: list,
-            primary_field: str,
-            ignore_vector: bool,
-            float_vector_fields: list,
-            pg_conn_str: str,
-        ) -> tuple[int, bool]:
-            """Compare a single batch between Milvus and PostgreSQL."""
-            batch_end = min(batch_start + batch_size, total_pks)
-            batch_num = batch_start // batch_size + 1
-            total_batches = (total_pks + batch_size - 1) // batch_size
-
-            logger.info(
-                f"Processing batch {batch_num}/{total_batches}: entities {batch_start + 1}-{batch_end}/{total_pks}"
-            )
-
-            try:
-                # Milvus fetch
-                milvus_filter = f"{primary_field} in {list(batch_pks)}"
-                milvus_data = MilvusClient.query(self, collection_name, filter=milvus_filter, output_fields=["*"])
-                milvus_df = pd.DataFrame(milvus_data)
-                # Drop vector columns for comparison if ignoring vectors
-                if ignore_vector and float_vector_fields:
-                    milvus_df.drop(
-                        columns=[c for c in float_vector_fields if c in milvus_df.columns],
-                        inplace=True,
-                        errors="ignore",
-                    )
-
-                # PG fetch - use a new connection for thread safety
-                pg_conn = psycopg2.connect(pg_conn_str)
-                try:
-                    placeholder = ", ".join(["%s"] * len(batch_pks))
-                    with pg_conn.cursor() as cursor:
-                        cursor.execute(
-                            f"SELECT * FROM {collection_name} WHERE {primary_field} IN ({placeholder});",
-                            batch_pks,
-                        )
-                        pg_rows = cursor.fetchall()
-                        colnames = [desc[0] for desc in cursor.description] if cursor.description else []
-                    pg_df = pd.DataFrame(pg_rows, columns=colnames or [])
-                finally:
-                    pg_conn.close()
-
-                # Compare data - create temporary instance for comparison
-                temp_client = MilvusPGClient.__new__(MilvusPGClient)
-                temp_client.primary_field = primary_field
-                temp_client.ignore_vector = ignore_vector
-                temp_client.float_vector_fields = float_vector_fields
-                temp_client.json_fields = self.json_fields
-                temp_client.array_fields = self.array_fields
-                temp_client.varchar_fields = self.varchar_fields
-
-                diff = temp_client._compare_df(milvus_df, pg_df)
-                has_differences = bool(diff)
-                if has_differences:
-                    logger.error(f"Differences detected between Milvus and PostgreSQL for batch {batch_num}:\n{diff}")
-
-                return len(batch_pks), has_differences
-
-            except Exception as e:
-                logger.error(f"Error comparing batch {batch_num}: {e}")
-                return len(batch_pks), True
-
-        # Create batch jobs and execute concurrently
+        # Create batch jobs for multiprocessing
         batch_jobs = []
         for batch_start in range(0, total_pks, batch_size):
             batch_pks = pks[batch_start : batch_start + batch_size]
-            batch_jobs.append((batch_start, batch_pks))
+            batch_job = (
+                batch_start,
+                batch_pks,
+                batch_size,
+                total_pks,
+                collection_name,
+                self.primary_field,
+                self.ignore_vector,
+                self.float_vector_fields,
+                self.json_fields,
+                self.array_fields,
+                self.varchar_fields,
+                self.pg_conn_str,
+                self.uri,
+                self.token,
+                self.sample_vector,
+                self.vector_sample_size,
+            )
+            batch_jobs.append(batch_job)
 
         has_any_differences = False
         milestones = {max(1, total_pks // 4), max(1, total_pks // 2), max(1, (total_pks * 3) // 4), total_pks}
 
-        logger.info(f"Starting concurrent comparison with {max_workers} threads for {len(batch_jobs)} batches")
+        logger.info(f"Starting concurrent comparison with {max_workers} processes for {len(batch_jobs)} batches")
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all batch jobs
-            future_to_batch = {
-                executor.submit(
-                    compare_batch,
-                    batch_start,
-                    batch_pks,
-                    self.primary_field,
-                    self.ignore_vector,
-                    self.float_vector_fields,
-                    self.pg_conn_str,
-                ): (batch_start, batch_pks)
-                for batch_start, batch_pks in batch_jobs
-            }
+        try:
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all batch jobs
+                future_to_batch = {
+                    executor.submit(_compare_batch_worker, *batch_job): batch_job for batch_job in batch_jobs
+                }
 
-            # Process completed batches
-            for future in as_completed(future_to_batch):
-                try:
-                    batch_size_actual, has_differences = future.result()
-                    if has_differences:
+                # Process completed batches
+                for future in as_completed(future_to_batch):
+                    try:
+                        batch_size_actual, has_differences = future.result()
+                        if has_differences:
+                            has_any_differences = True
+                            batch_job = future_to_batch[future]
+                            batch_start = batch_job[0]
+                            batch_num = batch_start // batch_size + 1
+                            logger.error(f"Differences detected in batch {batch_num}")
+
+                        compared += batch_size_actual
+                        if compared in milestones:
+                            logger.info(
+                                f"Comparison progress: {compared}/{total_pks} ({(compared * 100) // total_pks}%) done."
+                            )
+
+                    except Exception as e:
+                        logger.error(f"Batch comparison failed: {e}")
                         has_any_differences = True
 
-                    compared += batch_size_actual
-                    if compared in milestones:
-                        logger.info(
-                            f"Comparison progress: {compared}/{total_pks} ({(compared * 100) // total_pks}%) done."
-                        )
-
-                except Exception as e:
-                    logger.error(f"Batch comparison failed: {e}")
-                    has_any_differences = True
+        except Exception as e:
+            logger.error(f"Process pool execution failed: {e}")
+            # Fallback to single-threaded comparison
+            logger.info("Falling back to single-threaded comparison")
+            return self._execute_single_threaded_comparison(collection_name, pks, batch_size)
 
         logger.info(f"Entity comparison completed for collection '{collection_name}'.")
         logger.info(f"Entity comparison completed in {time.time() - start_time:.3f} s.")
@@ -1780,6 +1907,50 @@ class MilvusPGClient(MilvusClient):
         else:
             logger.info(f"Entity comparison successful - no differences found for collection '{collection_name}'.")
             return True
+
+    def _execute_single_threaded_comparison(self, collection_name: str, pks: list, batch_size: int) -> bool:
+        """Fallback single-threaded comparison when multiprocessing fails."""
+        total_pks = len(pks)
+        has_any_differences = False
+
+        logger.info(f"Running single-threaded comparison for {total_pks} entities")
+
+        for batch_start in range(0, total_pks, batch_size):
+            batch_pks = pks[batch_start : batch_start + batch_size]
+            batch_num = batch_start // batch_size + 1
+            total_batches = (total_pks + batch_size - 1) // batch_size
+
+            logger.info(f"Processing batch {batch_num}/{total_batches}")
+
+            try:
+                # Use original comparison logic
+                milvus_filter = f"{self.primary_field} in {list(batch_pks)}"
+                milvus_data = super().query(collection_name, filter=milvus_filter, output_fields=["*"])
+                milvus_df = pd.DataFrame(milvus_data)
+
+                # PG fetch
+                with self._get_pg_connection() as conn:
+                    placeholder = ", ".join(["%s"] * len(batch_pks))
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            f"SELECT * FROM {collection_name} WHERE {self.primary_field} IN ({placeholder});",
+                            batch_pks,
+                        )
+                        pg_rows = cursor.fetchall()
+                        colnames = [desc[0] for desc in cursor.description] if cursor.description else []
+                    pg_df = pd.DataFrame(pg_rows, columns=colnames or [])
+
+                # Compare using existing method
+                diff = self._compare_df(milvus_df, pg_df)
+                if diff:
+                    has_any_differences = True
+                    logger.error(f"Differences detected in batch {batch_num}")
+
+            except Exception as e:
+                logger.error(f"Error in single-threaded comparison batch {batch_num}: {e}")
+                has_any_differences = True
+
+        return not has_any_differences
 
     def entity_compare(
         self,

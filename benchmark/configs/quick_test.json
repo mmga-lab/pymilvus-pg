@@ -1,0 +1,12 @@
+{
+  "collection_name": "quick_benchmark",
+  "record_counts": [100, 500],
+  "batch_sizes": [100],
+  "vector_dims": [128],
+  "concurrent_workers": [1, 2],
+  "runs_per_config": 2,
+  "ignore_vector": false,
+  "sample_vector": false,
+  "vector_sample_size": 8,
+  "warmup_runs": 1
+}

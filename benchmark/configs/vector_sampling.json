@@ -1,0 +1,12 @@
+{
+  "collection_name": "vector_sampling_benchmark",
+  "record_counts": [1000, 5000],
+  "batch_sizes": [500, 1000],
+  "vector_dims": [512, 1024],
+  "concurrent_workers": [1, 4, 8],
+  "runs_per_config": 3,
+  "ignore_vector": false,
+  "sample_vector": true,
+  "vector_sample_size": 16,
+  "warmup_runs": 1
+}
