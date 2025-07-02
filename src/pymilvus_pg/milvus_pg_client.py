@@ -17,11 +17,14 @@ Key Features:
 
 from __future__ import annotations
 
+import ast
 import json
+import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from functools import wraps
 from typing import Any
 
@@ -29,6 +32,7 @@ import numpy as np
 import pandas as pd
 import psycopg2
 from deepdiff import DeepDiff
+from psycopg2 import pool
 from psycopg2.extensions import connection as PGConnection
 from psycopg2.extras import execute_values
 from pymilvus import CollectionSchema, DataType, MilvusClient, connections
@@ -64,11 +68,17 @@ class MilvusPGClient(MilvusClient):
     ignore_vector: bool, optional
         If True, skip handling FLOAT_VECTOR fields in PostgreSQL operations and comparisons.
         This is useful when PostgreSQL is only used for metadata validation.
+    sample_vector: bool, optional
+        If True, sample only a subset of values from each vector for PostgreSQL storage.
+        This improves performance while still allowing validation. Default is False.
+    vector_sample_size: int, optional
+        Number of values to sample from each vector when sample_vector is True.
+        Default is 8.
 
     Attributes
     ----------
-    pg_conn : PGConnection
-        PostgreSQL database connection
+    pg_pool : psycopg2.pool.ThreadedConnectionPool
+        PostgreSQL connection pool
     ignore_vector : bool
         Whether to ignore vector fields in PostgreSQL operations
     primary_field : str
@@ -88,6 +98,8 @@ class MilvusPGClient(MilvusClient):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         # Extract custom parameters before calling parent constructor
         self.ignore_vector: bool = kwargs.pop("ignore_vector", False)
+        self.sample_vector: bool = kwargs.pop("sample_vector", False)
+        self.vector_sample_size: int = kwargs.pop("vector_sample_size", 8)
         self.pg_conn_str: str = kwargs.pop("pg_conn_str")
         uri = kwargs.get("uri", "")
         token = kwargs.get("token", "")
@@ -101,13 +113,18 @@ class MilvusPGClient(MilvusClient):
         logger.debug(f"Connecting to Milvus with URI: {uri}")
         connections.connect(uri=uri, token=token)
 
-        # Connect to PostgreSQL
-        logger.info("Connecting to PostgreSQL database")
+        # Connect to PostgreSQL with connection pooling
+        logger.info("Initializing PostgreSQL connection pool")
         try:
-            self.pg_conn: PGConnection = psycopg2.connect(self.pg_conn_str)
-            self.pg_conn.autocommit = False  # We'll manage transactions manually
-            logger.debug("PostgreSQL connection established successfully")
-        except Exception as e:
+            self.pg_pool = pool.ThreadedConnectionPool(minconn=2, maxconn=20, dsn=self.pg_conn_str)
+            logger.debug("PostgreSQL connection pool established successfully")
+
+            # Test connection
+            test_conn = self.pg_pool.getconn()
+            test_conn.autocommit = False
+            self.pg_pool.putconn(test_conn)
+
+        except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
             logger.error(f"Failed to connect to PostgreSQL: {e}")
             raise MilvusPGConnectionError(f"Failed to connect to PostgreSQL: {e}") from e
 
@@ -119,8 +136,258 @@ class MilvusPGClient(MilvusClient):
         self.varchar_fields: list[str] = []
         self.float_vector_fields: list[str] = []
 
+        # Schema cache to avoid repeated schema fetching
+        self._schema_cache: dict[str, CollectionSchema] = {}
+        self._current_collection: str = ""
+
         # Thread synchronization lock for write operations
         self._lock: threading.Lock = threading.Lock()
+
+    @contextmanager
+    def _get_pg_connection(self) -> Generator[PGConnection, None, None]:
+        """Context manager for getting PostgreSQL connections from pool."""
+        conn = None
+        try:
+            conn = self.pg_pool.getconn()
+            conn.autocommit = False
+            yield conn
+        except Exception:
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                self.pg_pool.putconn(conn)
+
+    def _sample_vector(self, vector: list | np.ndarray) -> list:
+        """
+        Sample a subset of values from a vector for PostgreSQL storage.
+
+        This method implements a deterministic sampling strategy that:
+        - Always includes the first and last values
+        - Evenly samples the remaining values across the vector
+
+        Parameters
+        ----------
+        vector : list | np.ndarray
+            The input vector to sample
+
+        Returns
+        -------
+        list
+            Sampled vector with self.vector_sample_size values
+        """
+        if not isinstance(vector, list | np.ndarray) or len(vector) == 0:
+            return list(vector) if isinstance(vector, np.ndarray) else vector
+
+        vector_len = len(vector)
+        sample_size = self.vector_sample_size
+
+        # If vector is smaller than sample size, return as is
+        if vector_len <= sample_size:
+            return list(vector)
+
+        # Deterministic sampling: always include first and last, evenly sample the rest
+        indices = [0]  # Always include first
+
+        # Calculate step size for even sampling
+        step = (vector_len - 1) / (sample_size - 1)
+
+        # Sample intermediate values
+        for i in range(1, sample_size - 1):
+            idx = int(round(i * step))
+            indices.append(idx)
+
+        indices.append(vector_len - 1)  # Always include last
+
+        # Extract sampled values
+        if isinstance(vector, np.ndarray):
+            sampled = vector[indices].tolist()
+        else:
+            sampled = [vector[i] for i in indices]
+
+        return sampled
+
+    def _serialize_special_fields(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Serialize JSON and ARRAY fields to string format for PostgreSQL storage.
+        Also applies vector sampling if enabled.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame containing the data to serialize
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with JSON and ARRAY fields serialized to strings and vectors sampled
+        """
+        # Create a copy to avoid modifying the original DataFrame
+        df_copy = df.copy()
+
+        # Serialize JSON fields
+        for field in self.json_fields:
+            if field in df_copy.columns:
+                df_copy[field] = df_copy[field].apply(json.dumps)
+                logger.debug(f"Serialized JSON field: {field}")
+
+        # Serialize ARRAY fields
+        for field in self.array_fields:
+            if field in df_copy.columns:
+                df_copy[field] = df_copy[field].apply(json.dumps)
+                logger.debug(f"Serialized ARRAY field: {field}")
+
+        # Sample vector fields if enabled
+        if self.sample_vector and not self.ignore_vector:
+            for field in self.float_vector_fields:
+                if field in df_copy.columns:
+                    df_copy[field] = df_copy[field].apply(self._sample_vector)
+                    logger.debug(f"Sampled vector field: {field} to {self.vector_sample_size} values")
+
+        return df_copy
+
+    def _remove_vector_fields_if_ignored(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Remove vector columns from DataFrame if vector fields are being ignored.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame to process
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with vector fields removed if ignore_vector is True
+        """
+        if self.ignore_vector and self.float_vector_fields:
+            original_cols = df.columns.tolist()
+            df = df.drop(columns=[c for c in self.float_vector_fields if c in df.columns], errors="ignore")
+            if len(df.columns) < len(original_cols):
+                dropped_fields = set(original_cols) - set(df.columns)
+                logger.debug(f"Dropped vector fields from PostgreSQL operation: {dropped_fields}")
+        return df
+
+    def _fast_preprocess_data(self, data: list[dict]) -> tuple[list[str], list[tuple]]:
+        """
+        Fast data preprocessing without DataFrame conversion for small to medium datasets.
+
+        This method processes data directly without creating intermediate DataFrames,
+        significantly reducing memory usage and processing time.
+
+        Parameters
+        ----------
+        data : list[dict]
+            List of records to process
+
+        Returns
+        -------
+        tuple[list[str], list[tuple]]
+            Tuple of (column_names, processed_values)
+        """
+        if not data:
+            return [], []
+
+        # Get columns from first record, filter out vector fields if needed
+        all_columns = list(data[0].keys())
+        if self.ignore_vector and self.float_vector_fields:
+            columns = [col for col in all_columns if col not in self.float_vector_fields]
+        else:
+            columns = all_columns
+
+        # Process records directly
+        values = []
+        for record in data:
+            processed_record = []
+            for col in columns:
+                value = record.get(col)
+
+                # Serialize JSON fields
+                if col in self.json_fields and value is not None:
+                    if not isinstance(value, str):
+                        value = json.dumps(value)
+
+                # Serialize ARRAY fields
+                elif col in self.array_fields and value is not None:
+                    if not isinstance(value, str):
+                        value = json.dumps(value)
+
+                # Sample vector fields if enabled
+                elif (
+                    col in self.float_vector_fields
+                    and value is not None
+                    and self.sample_vector
+                    and not self.ignore_vector
+                ):
+                    value = self._sample_vector(value)
+
+                processed_record.append(value)
+            values.append(tuple(processed_record))
+
+        logger.debug(f"Fast preprocessed {len(values)} records with {len(columns)} columns")
+        return columns, values
+
+    def _stream_process_large_data(
+        self, data: list[dict], batch_size: int = 1000
+    ) -> Generator[pd.DataFrame, None, None]:
+        """
+        Process large datasets in streaming fashion to reduce memory usage.
+
+        This method processes data in batches to avoid loading the entire dataset
+        into memory at once, which is crucial for large-scale operations.
+
+        Parameters
+        ----------
+        data : list[dict]
+            List of records to process
+        batch_size : int, optional
+            Number of records to process per batch, by default 1000
+
+        Yields
+        ------
+        pd.DataFrame
+            Processed DataFrame batches with serialized fields
+        """
+        logger.debug(f"Starting streaming processing of {len(data)} records with batch size {batch_size}")
+
+        for i in range(0, len(data), batch_size):
+            batch = data[i : i + batch_size]
+            batch_df = pd.DataFrame(batch)
+
+            # Process the batch with serialization and field removal
+            processed_df = self._serialize_special_fields(batch_df)
+            processed_df = self._remove_vector_fields_if_ignored(processed_df)
+
+            logger.debug(f"Processed batch {i // batch_size + 1}: {len(batch)} records")
+            yield processed_df
+
+    def _calculate_optimal_batch_size(self, data_size_estimate: int, record_count: int) -> int:
+        """
+        Calculate optimal batch size based on data characteristics.
+
+        Parameters
+        ----------
+        data_size_estimate : int
+            Estimated total data size in bytes
+        record_count : int
+            Number of records
+
+        Returns
+        -------
+        int
+            Optimal batch size for the given data characteristics
+        """
+        if record_count == 0:
+            return 1000
+
+        # Target batch size: ~1MB per batch for PostgreSQL optimal performance
+        target_batch_bytes = 1024 * 1024
+        avg_record_size = data_size_estimate / record_count
+        optimal_size = max(100, min(10000, int(target_batch_bytes / avg_record_size)))
+
+        logger.debug(f"Calculated optimal batch size: {optimal_size} (avg record size: {avg_record_size:.0f} bytes)")
+        return optimal_size
 
     # ---------------------------------------------------------------------
     # Schema and utility methods
@@ -131,6 +398,7 @@ class MilvusPGClient(MilvusClient):
 
         This method fetches the collection schema from Milvus and populates
         internal field lists for efficient field type checking during operations.
+        Uses caching to avoid repeated schema fetching for the same collection.
 
         Parameters
         ----------
@@ -142,12 +410,42 @@ class MilvusPGClient(MilvusClient):
         CollectionSchema
             The collection schema from Milvus
         """
-        logger.debug(f"Retrieving schema for collection: {collection_name}")
+        # Check if schema is already cached and collection hasn't changed
+        if collection_name in self._schema_cache and self._current_collection == collection_name:
+            logger.debug(f"Using cached schema for collection: {collection_name}")
+            return self._schema_cache[collection_name]
+
+        logger.debug(f"Fetching schema for collection: {collection_name}")
         temp_client = MilvusClient(uri=self.uri, token=self.token)
         schema_info = temp_client.describe_collection(collection_name)
         schema = CollectionSchema.construct_from_dict(schema_info)
 
-        # Reset field caches for the new collection
+        # Cache the schema
+        self._schema_cache[collection_name] = schema
+        self._current_collection = collection_name
+
+        # Update field caches for the current collection
+        self._update_field_caches(schema)
+
+        logger.debug(
+            f"Schema cached - Primary field: {self.primary_field}, "
+            f"Fields: {len(self.fields_name_list)}, "
+            f"JSON: {len(self.json_fields)}, "
+            f"Arrays: {len(self.array_fields)}, "
+            f"Vectors: {len(self.float_vector_fields)}"
+        )
+        return schema
+
+    def _update_field_caches(self, schema: CollectionSchema) -> None:
+        """
+        Update internal field type caches based on schema.
+
+        Parameters
+        ----------
+        schema : CollectionSchema
+            The collection schema to process
+        """
+        # Reset field caches
         self.primary_field = ""
         self.fields_name_list.clear()
         self.json_fields.clear()
@@ -168,15 +466,6 @@ class MilvusPGClient(MilvusClient):
                 self.json_fields.append(field.name)
             if field.dtype == DataType.VARCHAR:
                 self.varchar_fields.append(field.name)
-
-        logger.debug(
-            f"Schema cached - Primary field: {self.primary_field}, "
-            f"Fields: {len(self.fields_name_list)}, "
-            f"JSON: {len(self.json_fields)}, "
-            f"Arrays: {len(self.array_fields)}, "
-            f"Vectors: {len(self.float_vector_fields)}"
-        )
-        return schema
 
     @staticmethod
     def _milvus_dtype_to_pg(milvus_type: DataType) -> str:
@@ -254,12 +543,12 @@ class MilvusPGClient(MilvusClient):
         # Create PostgreSQL table
         try:
             pg_start = time.time()
-            with self.pg_conn.cursor() as cursor:
-                cursor.execute(create_sql)
-            self.pg_conn.commit()
+            with self._get_pg_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(create_sql)
+                conn.commit()
             logger.debug(f"PostgreSQL table created in {time.time() - pg_start:.3f}s")
-        except Exception as e:
-            self.pg_conn.rollback()
+        except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
             logger.error(f"Failed to create PostgreSQL table: {e}")
             raise SyncError(f"Failed to create PostgreSQL table: {e}") from e
 
@@ -293,12 +582,12 @@ class MilvusPGClient(MilvusClient):
         # Drop PostgreSQL table
         try:
             start = time.time()
-            with self.pg_conn.cursor() as cursor:
-                cursor.execute(f"DROP TABLE IF EXISTS {collection_name};")
-            self.pg_conn.commit()
+            with self._get_pg_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(f"DROP TABLE IF EXISTS {collection_name};")
+                conn.commit()
             logger.debug(f"PostgreSQL table dropped in {time.time() - start:.3f}s")
-        except Exception as e:
-            self.pg_conn.rollback()
+        except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
             logger.error(f"Failed to drop PostgreSQL table: {e}")
             raise SyncError(f"Failed to drop PostgreSQL table: {e}") from e
 
@@ -354,63 +643,72 @@ class MilvusPGClient(MilvusClient):
         logger.info(f"Inserting {len(data)} records into collection '{collection_name}'")
         logger.debug(f"Insert data sample: {data[0] if data else 'empty'}")
 
-        # Prepare DataFrame for JSON/ARRAY serialization
-        df = pd.DataFrame(data)
+        # Use fast preprocessing for better performance
+        # For datasets under 10K records, use direct processing without DataFrame
+        # For larger datasets, fallback to streaming processing
+        large_dataset_threshold = 10000
 
-        # Serialize JSON and ARRAY fields to string format for PostgreSQL
-        for field in self.json_fields:
-            if field in df.columns:
-                df[field] = df[field].apply(json.dumps)
-                logger.debug(f"Serialized JSON field: {field}")
+        if len(data) <= large_dataset_threshold:
+            # Fast direct processing without DataFrame conversion
+            logger.debug(f"Using fast preprocessing for {len(data)} records")
+            columns, values = self._fast_preprocess_data(data)
+        else:
+            # Fallback to streaming processing for very large datasets
+            logger.debug(f"Using streaming processing for large dataset ({len(data)} records)")
+            import sys
 
-        for field in self.array_fields:
-            if field in df.columns:
-                df[field] = df[field].apply(json.dumps)
-                logger.debug(f"Serialized ARRAY field: {field}")
+            data_size_estimate = sys.getsizeof(data) + sum(sys.getsizeof(record) for record in data[:100])
+            optimal_batch_size = self._calculate_optimal_batch_size(data_size_estimate, len(data))
 
-        # Remove vector columns from PostgreSQL insert if ignoring vectors
-        if self.ignore_vector and self.float_vector_fields:
-            original_cols = df.columns.tolist()
-            df.drop(columns=[c for c in self.float_vector_fields if c in df.columns], inplace=True, errors="ignore")
-            if len(df.columns) < len(original_cols):
-                logger.debug(f"Dropped vector fields from PostgreSQL insert: {set(original_cols) - set(df.columns)}")
+            # Process data in streaming fashion
+            all_values = []
+            columns = None
+
+            for batch_df in self._stream_process_large_data(data, optimal_batch_size):
+                if columns is None:
+                    columns = list(batch_df.columns)
+                batch_values = [tuple(row) for row in batch_df.itertuples(index=False, name=None)]
+                all_values.extend(batch_values)
+
+            values = all_values
 
         # Build efficient batch INSERT SQL
-        columns = list(df.columns)
+        if columns is None:
+            raise SyncError("No columns available for insert operation")
         insert_sql = f"INSERT INTO {collection_name} ({', '.join(columns)}) VALUES %s"
-        values = [tuple(row) for row in df.itertuples(index=False, name=None)]
         logger.debug(f"Prepared {len(values)} rows for PostgreSQL batch insert")
 
-        try:
-            # Execute PostgreSQL batch insert using execute_values for performance
-            logger.debug("Starting PostgreSQL batch INSERT operation")
-            t0 = time.time()
-            with self.pg_conn.cursor() as cursor:
-                execute_values(cursor, insert_sql, values, page_size=1000)
-                pg_duration = time.time() - t0
-                logger.debug(f"PostgreSQL batch INSERT completed: {cursor.rowcount} rows in {pg_duration:.3f}s")
-        except Exception as e:
-            self.pg_conn.rollback()
-            logger.error(f"PostgreSQL insert failed for collection '{collection_name}': {e}")
-            raise SyncError(f"PostgreSQL insert failed: {e}") from e
+        # Execute synchronized insert operations
+        with self._get_pg_connection() as conn:
+            try:
+                # Execute PostgreSQL batch insert using execute_values for performance
+                logger.debug("Starting PostgreSQL batch INSERT operation")
+                t0 = time.time()
+                with conn.cursor() as cursor:
+                    # Use dynamic page_size based on data size for better performance
+                    page_size = min(2000, max(500, len(values) // 10))
+                    execute_values(cursor, insert_sql, values, page_size=page_size)
+                    pg_duration = time.time() - t0
+                    logger.debug(f"PostgreSQL batch INSERT completed: {cursor.rowcount} rows in {pg_duration:.3f}s")
 
-        try:
-            # Execute Milvus insert operation
-            logger.debug("Starting Milvus insert operation")
-            t0 = time.time()
-            result = super().insert(collection_name, data, **kwargs)
-            milvus_duration = time.time() - t0
-            logger.debug(f"Milvus insert completed in {milvus_duration:.3f}s")
+                # Execute Milvus insert operation
+                logger.debug("Starting Milvus insert operation")
+                t0 = time.time()
+                result = super().insert(collection_name, data, **kwargs)
+                milvus_duration = time.time() - t0
+                logger.debug(f"Milvus insert completed in {milvus_duration:.3f}s")
 
-            # Commit PostgreSQL transaction on successful Milvus insert
-            self.pg_conn.commit()
-            logger.debug("PostgreSQL transaction committed successfully")
-            return result
+                # Commit PostgreSQL transaction on successful Milvus insert
+                conn.commit()
+                logger.debug("PostgreSQL transaction committed successfully")
+                return result
 
-        except Exception as e:
-            self.pg_conn.rollback()
-            logger.error(f"Milvus insert failed for collection '{collection_name}', PostgreSQL rolled back: {e}")
-            raise SyncError(f"Milvus insert failed, PostgreSQL rolled back: {e}") from e
+            except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
+                logger.error(f"PostgreSQL insert failed for collection '{collection_name}': {e}")
+                raise SyncError(f"PostgreSQL insert failed: {e}") from e
+            except Exception as e:
+                logger.error(f"Milvus insert failed for collection '{collection_name}', PostgreSQL rolled back: {e}")
+                raise SyncError(f"Milvus insert failed, PostgreSQL rolled back: {e}") from e
 
     @_synchronized
     def upsert(self, collection_name: str, data: EntityData, **kwargs: Any) -> Any:
@@ -438,61 +736,50 @@ class MilvusPGClient(MilvusClient):
         logger.info(f"Upserting {len(data)} records into collection '{collection_name}'")
         logger.debug(f"Upsert data sample: {data[0] if data else 'empty'}")
 
-        # Prepare data similar to insert
-        df = pd.DataFrame(data)
-        for field in self.json_fields:
-            if field in df.columns:
-                df[field] = df[field].apply(json.dumps)
-        for field in self.array_fields:
-            if field in df.columns:
-                df[field] = df[field].apply(json.dumps)
-
-        # Remove vector columns if ignoring them
-        if self.ignore_vector and self.float_vector_fields:
-            df.drop(columns=[c for c in self.float_vector_fields if c in df.columns], inplace=True, errors="ignore")
+        # Use fast preprocessing for upsert as well
+        columns, values = self._fast_preprocess_data(data)
 
         # Build PostgreSQL UPSERT SQL with ON CONFLICT clause
-        cols = list(df.columns)
-        updates = ", ".join([f"{col}=EXCLUDED.{col}" for col in cols])
+        updates = ", ".join([f"{col}=EXCLUDED.{col}" for col in columns])
         insert_sql = (
-            f"INSERT INTO {collection_name} ({', '.join(cols)}) VALUES %s "
+            f"INSERT INTO {collection_name} ({', '.join(columns)}) VALUES %s "
             f"ON CONFLICT ({self.primary_field}) DO UPDATE SET {updates}"
         )
-        values = [tuple(row) for row in df.itertuples(index=False, name=None)]
         logger.debug(f"Prepared PostgreSQL upsert with conflict resolution on '{self.primary_field}'")
 
-        try:
-            # Execute PostgreSQL batch upsert
-            logger.debug("Starting PostgreSQL batch UPSERT operation")
-            t0 = time.time()
-            with self.pg_conn.cursor() as cursor:
-                execute_values(cursor, insert_sql, values, page_size=1000)
-                pg_duration = time.time() - t0
-                logger.debug(
-                    f"PostgreSQL batch UPSERT completed: {cursor.rowcount} rows affected in {pg_duration:.3f}s"
-                )
-        except Exception as e:
-            self.pg_conn.rollback()
-            logger.error(f"PostgreSQL upsert failed for collection '{collection_name}': {e}")
-            raise SyncError(f"PostgreSQL upsert failed: {e}") from e
+        # Execute synchronized upsert operations
+        with self._get_pg_connection() as conn:
+            try:
+                # Execute PostgreSQL batch upsert
+                logger.debug("Starting PostgreSQL batch UPSERT operation")
+                t0 = time.time()
+                with conn.cursor() as cursor:
+                    # Use dynamic page_size based on data size for better performance
+                    page_size = min(2000, max(500, len(values) // 10))
+                    execute_values(cursor, insert_sql, values, page_size=page_size)
+                    pg_duration = time.time() - t0
+                    logger.debug(
+                        f"PostgreSQL batch UPSERT completed: {cursor.rowcount} rows affected in {pg_duration:.3f}s"
+                    )
 
-        try:
-            # Execute Milvus upsert operation
-            logger.debug("Starting Milvus upsert operation")
-            t0 = time.time()
-            result = super().upsert(collection_name, data, **kwargs)
-            milvus_duration = time.time() - t0
-            logger.debug(f"Milvus upsert completed in {milvus_duration:.3f}s")
+                # Execute Milvus upsert operation
+                logger.debug("Starting Milvus upsert operation")
+                t0 = time.time()
+                result = super().upsert(collection_name, data, **kwargs)
+                milvus_duration = time.time() - t0
+                logger.debug(f"Milvus upsert completed in {milvus_duration:.3f}s")
 
-            # Commit PostgreSQL transaction on successful Milvus upsert
-            self.pg_conn.commit()
-            logger.debug("PostgreSQL transaction committed successfully")
-            return result
+                # Commit PostgreSQL transaction on successful Milvus upsert
+                conn.commit()
+                logger.debug("PostgreSQL transaction committed successfully")
+                return result
 
-        except Exception as e:
-            self.pg_conn.rollback()
-            logger.error(f"Milvus upsert failed for collection '{collection_name}', PostgreSQL rolled back: {e}")
-            raise SyncError(f"Milvus upsert failed, PostgreSQL rolled back: {e}") from e
+            except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
+                logger.error(f"PostgreSQL upsert failed for collection '{collection_name}': {e}")
+                raise SyncError(f"PostgreSQL upsert failed: {e}") from e
+            except Exception as e:
+                logger.error(f"Milvus upsert failed for collection '{collection_name}', PostgreSQL rolled back: {e}")
+                raise SyncError(f"Milvus upsert failed, PostgreSQL rolled back: {e}") from e
 
     @_synchronized
     def delete(self, collection_name: str, ids: PrimaryKeyList, **kwargs: Any) -> Any:
@@ -521,36 +808,35 @@ class MilvusPGClient(MilvusClient):
         placeholder = ", ".join(["%s"] * len(ids))
         delete_sql = f"DELETE FROM {collection_name} WHERE {self.primary_field} IN ({placeholder});"
 
-        try:
-            # Execute PostgreSQL delete
-            logger.debug("Starting PostgreSQL DELETE operation")
-            t0 = time.time()
-            with self.pg_conn.cursor() as cursor:
-                cursor.execute(delete_sql, ids)
-                pg_duration = time.time() - t0
-                logger.debug(f"PostgreSQL DELETE completed: {cursor.rowcount} rows deleted in {pg_duration:.3f}s")
-        except Exception as e:
-            self.pg_conn.rollback()
-            logger.error(f"PostgreSQL delete failed for collection '{collection_name}': {e}")
-            raise SyncError(f"PostgreSQL delete failed: {e}") from e
+        # Execute synchronized delete operations
+        with self._get_pg_connection() as conn:
+            try:
+                # Execute PostgreSQL delete
+                logger.debug("Starting PostgreSQL DELETE operation")
+                t0 = time.time()
+                with conn.cursor() as cursor:
+                    cursor.execute(delete_sql, ids)
+                    pg_duration = time.time() - t0
+                    logger.debug(f"PostgreSQL DELETE completed: {cursor.rowcount} rows deleted in {pg_duration:.3f}s")
 
-        try:
-            # Execute Milvus delete
-            logger.debug("Starting Milvus delete operation")
-            t0 = time.time()
-            result = super().delete(collection_name, ids=ids, **kwargs)
-            milvus_duration = time.time() - t0
-            logger.debug(f"Milvus delete completed in {milvus_duration:.3f}s")
+                # Execute Milvus delete
+                logger.debug("Starting Milvus delete operation")
+                t0 = time.time()
+                result = super().delete(collection_name, ids=ids, **kwargs)
+                milvus_duration = time.time() - t0
+                logger.debug(f"Milvus delete completed in {milvus_duration:.3f}s")
 
-            # Commit PostgreSQL transaction on successful Milvus delete
-            self.pg_conn.commit()
-            logger.debug("PostgreSQL transaction committed successfully")
-            return result
+                # Commit PostgreSQL transaction on successful Milvus delete
+                conn.commit()
+                logger.debug("PostgreSQL transaction committed successfully")
+                return result
 
-        except Exception as e:
-            self.pg_conn.rollback()
-            logger.error(f"Milvus delete failed for collection '{collection_name}', PostgreSQL rolled back: {e}")
-            raise SyncError(f"Milvus delete failed, PostgreSQL rolled back: {e}") from e
+            except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
+                logger.error(f"PostgreSQL delete failed for collection '{collection_name}': {e}")
+                raise SyncError(f"PostgreSQL delete failed: {e}") from e
+            except Exception as e:
+                logger.error(f"Milvus delete failed for collection '{collection_name}', PostgreSQL rolled back: {e}")
+                raise SyncError(f"Milvus delete failed, PostgreSQL rolled back: {e}") from e
 
     # ------------------------------------------------------------------
     # Read operations and validation helpers
@@ -606,15 +892,16 @@ class MilvusPGClient(MilvusClient):
         # Fetch from PostgreSQL
         logger.debug("Executing PostgreSQL query")
         t0 = time.time()
-        with self.pg_conn.cursor() as cursor:
-            cursor.execute(pg_sql)
-            pg_rows = cursor.fetchall()
-            # Handle column names for DataFrame construction
-            if cursor.description:
-                colnames = [str(desc[0]) for desc in cursor.description]
-                pg_df = pd.DataFrame(pg_rows, columns=colnames)
-            else:
-                pg_df = pd.DataFrame(pg_rows)
+        with self._get_pg_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(pg_sql)
+                pg_rows = cursor.fetchall()
+                # Handle column names for DataFrame construction
+                if cursor.description:
+                    colnames = [str(desc[0]) for desc in cursor.description]
+                    pg_df = pd.DataFrame(pg_rows, columns=colnames)
+                else:
+                    pg_df = pd.DataFrame(pg_rows)
         pg_duration = time.time() - t0
         logger.debug(f"PostgreSQL query completed: {len(pg_df)} rows in {pg_duration:.3f}s")
 
@@ -640,10 +927,11 @@ class MilvusPGClient(MilvusClient):
         logger.debug(f"Exporting all data from PostgreSQL table '{collection_name}'")
         t0 = time.time()
 
-        with self.pg_conn.cursor() as cursor:
-            cursor.execute(f"SELECT * FROM {collection_name};")
-            rows = cursor.fetchall()
-            colnames = [desc[0] for desc in cursor.description] if cursor.description else []
+        with self._get_pg_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(f"SELECT * FROM {collection_name};")
+                rows = cursor.fetchall()
+                colnames = [desc[0] for desc in cursor.description] if cursor.description else []
 
         result = [dict(zip(colnames, r, strict=False)) for r in rows]
         df = pd.DataFrame(result)
@@ -683,23 +971,24 @@ class MilvusPGClient(MilvusClient):
         try:
             logger.debug("Querying PostgreSQL count")
             # Check if table exists first
-            with self.pg_conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = %s;",
-                    (collection_name,),
-                )
-                result = cursor.fetchone()
-                table_exists = result[0] > 0 if result else False
-
-                if table_exists:
-                    cursor.execute(f"SELECT COUNT(*) FROM {collection_name};")
+            with self._get_pg_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = %s;",
+                        (collection_name,),
+                    )
                     result = cursor.fetchone()
-                    pg_count = int(result[0]) if result else 0
-                    logger.debug(f"PostgreSQL count: {pg_count}")
-                else:
-                    logger.error(f"PostgreSQL table '{collection_name}' does not exist")
-                    pg_count = 0
-        except Exception as e:
+                    table_exists = result[0] > 0 if result else False
+
+                    if table_exists:
+                        cursor.execute(f"SELECT COUNT(*) FROM {collection_name};")
+                        result = cursor.fetchone()
+                        pg_count = int(result[0]) if result else 0
+                        logger.debug(f"PostgreSQL count: {pg_count}")
+                    else:
+                        logger.error(f"PostgreSQL table '{collection_name}' does not exist")
+                        pg_count = 0
+        except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
             logger.error(f"Failed to query PostgreSQL count for collection '{collection_name}': {e}")
             pg_count = 0
 
@@ -832,20 +1121,54 @@ class MilvusPGClient(MilvusClient):
     # Internal helpers for query alignment
     # ------------------------------------------------------------------
     def _milvus_filter_to_sql(self, filter_expr: FilterExpression) -> str:
-        """Convert simple Milvus filter to PostgreSQL SQL.
+        """Convert simple Milvus filter expressions to PostgreSQL SQL WHERE clauses.
 
-        Current support:
-        1. Logical operators to uppercase
-        2. Equality '==' -> '='
-        3. IN list: field in [1,2] -> field IN (1,2)
-        4. LIKE ensure single quotes
-        5. IS NULL variants
-        6. JSON key access: field["key"] -> field->>'key'
-        7. Strings: "abc" -> 'abc'
-        8. Collapse spaces
+        This method provides basic filter conversion for common Milvus filter patterns.
+        It's designed to handle filters generated by the sampling and testing utilities
+        in this project, not arbitrary complex expressions.
 
-        Note: This is *not* a full parser – it handles common simple filters generated
-        by helper utilities in this project. Extend if you need more complex syntax.
+        Supported Conversions:
+        ----------------------
+        1. Logical operators: 'and' -> 'AND', 'or' -> 'OR', 'not' -> 'NOT'
+        2. Equality operators: '==' -> '='
+        3. List membership: 'field in [1,2,3]' -> 'field IN (1,2,3)'
+        4. String patterns: 'field LIKE "pattern"' -> 'field LIKE \'pattern\''
+        5. Null checks: 'field is null' -> 'field IS NULL'
+        6. JSON access: 'field["key"]' -> 'field->>\'key\''
+        7. String literals: '"text"' -> '\'text\''
+
+        Limitations:
+        ------------
+        - No support for complex nested expressions
+        - No arithmetic operations
+        - No subqueries or joins
+        - Limited function support
+
+        Parameters
+        ----------
+        filter_expr : FilterExpression
+            Milvus filter expression string
+
+        Returns
+        -------
+        str
+            PostgreSQL-compatible SQL WHERE clause
+
+        Raises
+        ------
+        FilterConversionError
+            If the filter contains unsupported syntax or invalid list formats
+
+        Examples
+        --------
+        >>> client._milvus_filter_to_sql('age > 18 and name == "John"')
+        "age > 18 AND name = 'John'"
+
+        >>> client._milvus_filter_to_sql('id in [1,2,3]')
+        'id IN (1,2,3)'
+
+        >>> client._milvus_filter_to_sql('metadata["category"] == "books"')
+        "metadata->>'category' = 'books'"
         """
         import re
 
@@ -863,12 +1186,15 @@ class MilvusPGClient(MilvusClient):
         expr = re.sub(r"(?<![!<>])==", "=", expr)
 
         # 3. IN list: field in [1,2] -> field IN (1,2)
-        def _in_repl(match: Any) -> str:
+        def _in_repl(match: re.Match[str]) -> str:
+            """Convert Python list syntax to SQL IN clause."""
             field = match.group(1)
             values = match.group(2)
             try:
-                py_list = eval(values)
-            except Exception as e:
+                py_list = ast.literal_eval(values)
+                if not isinstance(py_list, list):
+                    raise ValueError("Expected list format")
+            except (ValueError, SyntaxError) as e:
                 raise FilterConversionError(filter_expr, f"Invalid list format: {values}") from e
             sql_list = ", ".join([f"'{v}'" if isinstance(v, str) else str(v) for v in py_list])
             return f"{field} IN ({sql_list})"
@@ -951,8 +1277,15 @@ class MilvusPGClient(MilvusClient):
 
         for field in self.float_vector_fields:
             if field in milvus_df.columns:
-                milvus_df[field] = milvus_df[field].apply(_to_py_list, round_floats=True)
+                if self.sample_vector and not self.ignore_vector:
+                    # Apply sampling to Milvus vectors for consistent comparison
+                    milvus_df[field] = milvus_df[field].apply(
+                        lambda x: self._sample_vector(_to_py_list(x, round_floats=True))
+                    )
+                else:
+                    milvus_df[field] = milvus_df[field].apply(_to_py_list, round_floats=True)
             if field in pg_df.columns:
+                # PostgreSQL vectors are already sampled during storage if sample_vector is enabled
                 pg_df[field] = pg_df[field].apply(_to_py_list, round_floats=True)
 
         # Remove vector columns if ignoring them
@@ -979,13 +1312,14 @@ class MilvusPGClient(MilvusClient):
     def sample_data(self, collection_name: str, num_samples: int = 100) -> pd.DataFrame:
         """Sample rows from PostgreSQL table for the given collection."""
         self._get_schema(collection_name)
-        with self.pg_conn.cursor() as cursor:
-            cursor.execute(
-                f"SELECT * FROM {collection_name} ORDER BY random() LIMIT %s;",
-                (num_samples,),
-            )
-            rows = cursor.fetchall()
-            colnames = [desc[0] for desc in cursor.description] if cursor.description else []
+        with self._get_pg_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT * FROM {collection_name} ORDER BY random() LIMIT %s;",
+                    (num_samples,),
+                )
+                rows = cursor.fetchall()
+                colnames = [desc[0] for desc in cursor.description] if cursor.description else []
         return pd.DataFrame(rows, columns=colnames)
 
     def generate_milvus_filter(self, collection_name: str, num_samples: int = 100) -> list[str]:
@@ -1174,9 +1508,10 @@ class MilvusPGClient(MilvusClient):
         # Get all primary keys from PostgreSQL
         logger.debug("Retrieving primary keys from PostgreSQL")
         t0 = time.time()
-        with self.pg_conn.cursor() as cursor:
-            cursor.execute(f"SELECT {self.primary_field} FROM {collection_name};")
-            pg_pks_rows = cursor.fetchall()
+        with self._get_pg_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(f"SELECT {self.primary_field} FROM {collection_name};")
+                pg_pks_rows = cursor.fetchall()
         pg_pks = set(r[0] for r in pg_pks_rows)
         pg_duration = time.time() - t0
         logger.debug(f"Retrieved {len(pg_pks)} primary keys from PostgreSQL in {pg_duration:.3f}s")
@@ -1217,63 +1552,56 @@ class MilvusPGClient(MilvusClient):
 
         return result
 
-    def entity_compare(
+    def _validate_comparison_parameters(
         self,
         collection_name: str,
-        batch_size: int = 1000,
-        *,
-        retry: int = 5,
-        retry_interval: float = 5.0,
-        full_scan: bool = False,
-        compare_pks_first: bool = True,
-    ) -> bool | dict[str, Any]:
+        batch_size: int,
+        retry: int,
+        retry_interval: float,
+        full_scan: bool,
+        compare_pks_first: bool,
+    ) -> None:
+        """Validate parameters for entity comparison."""
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if retry < 0:
+            raise ValueError("retry must be non-negative")
+        if retry_interval < 0:
+            raise ValueError("retry_interval must be non-negative")
+        logger.debug(
+            f"Comparison parameters: batch_size={batch_size}, retry={retry}, "
+            f"full_scan={full_scan}, compare_pks_first={compare_pks_first}"
+        )
+
+    def _perform_primary_key_comparison(self, collection_name: str) -> bool:
         """
-        Perform comprehensive comparison of entity data between Milvus and PostgreSQL.
-
-        This method performs a multi-stage comparison process:
-        1. Optional primary key comparison to identify missing records
-        2. Record count comparison with retry logic for eventual consistency
-        3. Optional full data comparison using concurrent batch processing
-
-        Parameters
-        ----------
-        collection_name : str
-            Name of the collection to compare
-        batch_size : int, optional
-            Number of records to process per batch, by default 1000
-        retry : int, optional
-            Number of retry attempts for count comparison, by default 5
-        retry_interval : float, optional
-            Seconds to wait between retry attempts, by default 5.0
-        full_scan : bool, optional
-            Whether to perform full data comparison or just count check, by default False
-        compare_pks_first : bool, optional
-            Whether to compare primary keys before data comparison, by default True
+        Perform primary key comparison between Milvus and PostgreSQL.
 
         Returns
         -------
         bool
-            True if comparison passed, False if differences were found
+            True if primary keys match, False otherwise
         """
-        self._get_schema(collection_name)
-        logger.info(f"Starting entity comparison for collection '{collection_name}'")
-        logger.debug(
-            f"Parameters: batch_size={batch_size}, retry={retry}, "
-            f"full_scan={full_scan}, compare_pks_first={compare_pks_first}"
-        )
+        logger.debug("Stage 1: Primary key comparison")
+        pk_comparison = self.compare_primary_keys(collection_name)
+        if pk_comparison["has_differences"]:
+            logger.error("Primary key comparison failed - data comparison may be inaccurate")
+            return False
+        else:
+            logger.debug("Primary key comparison passed")
+            return True
 
-        # Stage 1: Primary key comparison (if enabled)
-        if compare_pks_first:
-            logger.debug("Stage 1: Primary key comparison")
-            pk_comparison = self.compare_primary_keys(collection_name)
-            if pk_comparison["has_differences"]:
-                logger.error("Primary key comparison failed - data comparison may be inaccurate")
-                if not full_scan:
-                    return False
-            else:
-                logger.debug("Primary key comparison passed")
+    def _perform_count_comparison(
+        self, collection_name: str, retry: int, retry_interval: float
+    ) -> tuple[bool, int, int]:
+        """
+        Perform count comparison with retry logic.
 
-        # Stage 2: Count comparison with retry logic for eventual consistency
+        Returns
+        -------
+        tuple[bool, int, int]
+            Tuple of (count_match, milvus_total, pg_total)
+        """
         logger.debug("Stage 2: Record count comparison with retry logic")
         milvus_total = 0
         pg_total = 0
@@ -1294,26 +1622,28 @@ class MilvusPGClient(MilvusClient):
             if attempt < retry - 1:
                 time.sleep(retry_interval)
 
-        # Validate final count results
         count_match = milvus_total == pg_total
         if not count_match:
             logger.error(f"Count mismatch after {retry} attempts: Milvus ({milvus_total}) vs PostgreSQL ({pg_total})")
+        return count_match, milvus_total, pg_total
 
-        # Stage 3: Full data comparison (if requested)
-        if not full_scan:
-            if count_match:
-                logger.info(f"Count check passed: {milvus_total} records in both systems")
-            return count_match
+    def _perform_full_data_comparison(self, collection_name: str, batch_size: int) -> bool:
+        """
+        Perform full data comparison using concurrent batch processing.
 
-        # Perform detailed entity comparison
+        Returns
+        -------
+        bool
+            True if all data matches, False otherwise
+        """
         logger.debug("Stage 3: Full data comparison")
         t0 = time.time()
 
         # Get primary keys for batch processing
-        # Use PostgreSQL keys to ensure we're comparing existing records
-        with self.pg_conn.cursor() as cursor:
-            cursor.execute(f"SELECT {self.primary_field} FROM {collection_name};")
-            pks_rows = cursor.fetchall()
+        with self._get_pg_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(f"SELECT {self.primary_field} FROM {collection_name};")
+                pks_rows = cursor.fetchall()
         pks = [r[0] for r in pks_rows]
 
         total_pks = len(pks)
@@ -1323,10 +1653,15 @@ class MilvusPGClient(MilvusClient):
 
         logger.info(f"Starting full data comparison for {total_pks} entities using {batch_size} batch size")
 
-        # Use concurrent processing for better performance
-        max_workers = min(16, (total_pks + batch_size - 1) // batch_size)  # Limit concurrent threads
+        return self._execute_concurrent_comparison(collection_name, pks, batch_size, t0)
+
+    def _execute_concurrent_comparison(
+        self, collection_name: str, pks: list, batch_size: int, start_time: float
+    ) -> bool:
+        """Execute concurrent batch comparison of entities."""
+        total_pks = len(pks)
+        max_workers = min(16, (total_pks + batch_size - 1) // batch_size)
         compared = 0
-        # Note: Using atomic counter without lock for progress tracking (minor race conditions acceptable)
 
         def compare_batch(
             batch_start: int,
@@ -1358,7 +1693,7 @@ class MilvusPGClient(MilvusClient):
                         errors="ignore",
                     )
 
-                # PG fetch - create a new connection for thread safety
+                # PG fetch - use a new connection for thread safety
                 pg_conn = psycopg2.connect(pg_conn_str)
                 try:
                     placeholder = ", ".join(["%s"] * len(batch_pks))
@@ -1369,7 +1704,7 @@ class MilvusPGClient(MilvusClient):
                         )
                         pg_rows = cursor.fetchall()
                         colnames = [desc[0] for desc in cursor.description] if cursor.description else []
-                    pg_df = pd.DataFrame(pg_rows, columns=list(colnames) if colnames else None)
+                    pg_df = pd.DataFrame(pg_rows, columns=colnames or [])
                 finally:
                     pg_conn.close()
 
@@ -1391,15 +1726,14 @@ class MilvusPGClient(MilvusClient):
 
             except Exception as e:
                 logger.error(f"Error comparing batch {batch_num}: {e}")
-                return len(batch_pks), True  # Treat errors as differences
+                return len(batch_pks), True
 
-        # Create batch jobs
+        # Create batch jobs and execute concurrently
         batch_jobs = []
         for batch_start in range(0, total_pks, batch_size):
             batch_pks = pks[batch_start : batch_start + batch_size]
             batch_jobs.append((batch_start, batch_pks))
 
-        # Execute batches concurrently
         has_any_differences = False
         milestones = {max(1, total_pks // 4), max(1, total_pks // 2), max(1, (total_pks * 3) // 4), total_pks}
 
@@ -1422,13 +1756,11 @@ class MilvusPGClient(MilvusClient):
 
             # Process completed batches
             for future in as_completed(future_to_batch):
-                batch_start, batch_pks = future_to_batch[future]
                 try:
                     batch_size_actual, has_differences = future.result()
                     if has_differences:
                         has_any_differences = True
 
-                    # Update progress counter (minor race conditions in logging acceptable)
                     compared += batch_size_actual
                     if compared in milestones:
                         logger.info(
@@ -1436,11 +1768,11 @@ class MilvusPGClient(MilvusClient):
                         )
 
                 except Exception as e:
-                    logger.error(f"Batch comparison failed for batch starting at {batch_start}: {e}")
+                    logger.error(f"Batch comparison failed: {e}")
                     has_any_differences = True
 
         logger.info(f"Entity comparison completed for collection '{collection_name}'.")
-        logger.info(f"Entity comparison completed in {time.time() - t0:.3f} s.")
+        logger.info(f"Entity comparison completed in {time.time() - start_time:.3f} s.")
 
         if has_any_differences:
             logger.error(f"Entity comparison found differences for collection '{collection_name}'.")
@@ -1449,10 +1781,96 @@ class MilvusPGClient(MilvusClient):
             logger.info(f"Entity comparison successful - no differences found for collection '{collection_name}'.")
             return True
 
+    def entity_compare(
+        self,
+        collection_name: str,
+        batch_size: int = 1000,
+        *,
+        retry: int = 5,
+        retry_interval: float = 5.0,
+        full_scan: bool = False,
+        compare_pks_first: bool = True,
+    ) -> bool:
+        """
+        Perform comprehensive comparison of entity data between Milvus and PostgreSQL.
+
+        This method performs a multi-stage comparison process:
+        1. Optional primary key comparison to identify missing records
+        2. Record count comparison with retry logic for eventual consistency
+        3. Optional full data comparison using concurrent batch processing
+
+        Parameters
+        ----------
+        collection_name : str
+            Name of the collection to compare
+        batch_size : int, optional
+            Number of records to process per batch, by default 1000
+        retry : int, optional
+            Number of retry attempts for count comparison, by default 5
+        retry_interval : float, optional
+            Seconds to wait between retry attempts, by default 5.0
+        full_scan : bool, optional
+            Whether to perform full data comparison or just count check, by default False
+        compare_pks_first : bool, optional
+            Whether to compare primary keys before data comparison, by default True
+
+        Returns
+        -------
+        bool
+            True if comparison passed, False if differences were found
+        """
+        self._get_schema(collection_name)
+        logger.info(f"Starting entity comparison for collection '{collection_name}'")
+
+        # Validate parameters
+        self._validate_comparison_parameters(
+            collection_name, batch_size, retry, retry_interval, full_scan, compare_pks_first
+        )
+
+        # Stage 1: Primary key comparison (if enabled)
+        if compare_pks_first:
+            if not self._perform_primary_key_comparison(collection_name):
+                if not full_scan:
+                    return False
+
+        # Stage 2: Count comparison with retry logic
+        count_match, milvus_total, pg_total = self._perform_count_comparison(collection_name, retry, retry_interval)
+
+        # Stage 3: Full data comparison (if requested)
+        if not full_scan:
+            if count_match:
+                logger.info(f"Count check passed: {milvus_total} records in both systems")
+            return count_match
+
+        # Perform detailed entity comparison
+        return self._perform_full_data_comparison(collection_name, batch_size)
+
     # ------------------------------------------------------------------
+    # Context manager support
+    # ------------------------------------------------------------------
+    def __enter__(self) -> MilvusPGClient:
+        """Enter context manager."""
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Exit context manager and cleanup resources."""
+        self._cleanup_resources()
+
     def __del__(self) -> None:
+        """Cleanup resources when object is garbage collected."""
+        self._cleanup_resources()
+
+    def _cleanup_resources(self) -> None:
+        """Internal method to cleanup resources, avoiding duplicate cleanup."""
         try:
-            if hasattr(self, "pg_conn"):
-                self.pg_conn.close()
+            if hasattr(self, "pg_pool") and self.pg_pool:
+                # Check if pool is already closed to avoid double-close warnings
+                if not self.pg_pool.closed:
+                    self.pg_pool.closeall()
+                    logger.debug("PostgreSQL connection pool closed successfully")
+                # Mark pool as None to prevent duplicate cleanup
+                self.pg_pool = None
         except Exception as e:
-            logger.warning(f"Error closing PostgreSQL connection: {e}")
+            # Only log if it's not a "pool already closed" error
+            if "closed" not in str(e).lower():
+                logger.warning(f"Error closing PostgreSQL connection pool: {e}")

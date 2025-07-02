@@ -5,7 +5,7 @@
 groups = ["default", "lint", "test"]
 strategy = []
 lock_version = "4.5.0"
-content_hash = "sha256:5dba3988ba373987e23f6f36df515ea58f6bc3a42928aa9814a3611831ba4a97"
+content_hash = "sha256:a9393fd52964ae4101590820974b905f7aefc26a6ee480150fecc6e03a70ce97"
 
 [[metadata.targets]]
 requires_python = ">=3.10"
@@ -180,17 +180,6 @@ summary = ""
 files = [
     {file = "distlib-0.3.9-py2.py3-none-any.whl", hash = "sha256:47f8c22fd27c27e25a65601af709b38e4f0a45ea4fc2e710f65755fa8caaaf87"},
     {file = "distlib-0.3.9.tar.gz", hash = "sha256:a60f20dea646b8a33f3e7772f74dc0b2d0772d2837ee1342a00645c81edf9403"},
-]
-
-[[package]]
-name = "dotenv"
-version = "0.9.9"
-summary = ""
-dependencies = [
-    "python-dotenv",
-]
-files = [
-    {file = "dotenv-0.9.9-py2.py3-none-any.whl", hash = "sha256:29cf74a087b31dafdb5a446b6d7e11cbce8ed2741540e2339c69fbef92c94ce9"},
 ]
 
 [[package]]
