@@ -15,7 +15,7 @@ def milvus_client_session():
     """Create a session-scoped MilvusPGClient instance for testing"""
     client = MilvusClient(
         uri=os.getenv("MILVUS_URI", "http://localhost:19530"),
-        pg_conn_str=os.getenv("PG_CONN", "postgresql://postgres:admin@localhost:5432/default"),
+        pg_conn_str=os.getenv("PG_CONN", "postgresql://postgres:admin@localhost:5432/postgres"),
     )
     yield client
     # Cleanup code if needed

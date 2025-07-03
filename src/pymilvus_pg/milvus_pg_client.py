@@ -32,7 +32,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import psycopg2
-from deepdiff import DeepDiff   
+from deepdiff import DeepDiff
 from psycopg2 import pool
 from psycopg2.extensions import connection as PGConnection
 from psycopg2.extras import execute_values
@@ -40,6 +40,7 @@ from pymilvus import CollectionSchema, DataType, MilvusClient, connections
 
 from .exceptions import ConnectionError as MilvusPGConnectionError
 from .exceptions import FilterConversionError, SyncError
+from .lmdb_manager import LMDBManager, PKOperation, PKStatus
 from .logger_config import logger
 from .types import (
     EntityData,
@@ -209,26 +210,20 @@ def _compare_batch_worker(
         milvus_aligned = milvus_aligned.reindex(columns=pg_aligned.columns)
         pg_aligned = pg_aligned.reindex(columns=milvus_aligned.columns)
 
-        # Simple comparison - check if DataFrames are equal
+        # Direct comparison using DeepDiff
         t0 = time.time()
-        has_differences = not milvus_aligned.equals(pg_aligned)
+        milvus_dict = milvus_aligned.to_dict(orient="records")
+        pg_dict = pg_aligned.to_dict(orient="records")
+        diff = DeepDiff(milvus_dict, pg_dict, ignore_order=True, significant_digits=1, view="tree")
+        has_differences = bool(diff)
         tt = time.time() - t0
+
         if has_differences:
             logger.debug(f"Differences found in batch {batch_num}")
-            logger.debug(f"Time taken to compare batch {batch_num} using equals: {tt} seconds")
-            t0 = time.time()
-            milvus_dict = milvus_aligned.to_dict(orient="records")
-            pg_dict = pg_aligned.to_dict(orient="records")
-            diff = DeepDiff(milvus_dict, 
-                            pg_dict, 
-                            ignore_order=True,
-                            significant_digits=1,
-                            view="tree")
-            tt = time.time() - t0
-            logger.debug(f"Time taken to compare batch {batch_num} using DeepDiff: {tt} seconds")
             logger.info(f"Differences found in batch {batch_num}: {diff}")
         else:
             logger.debug(f"No differences found in batch {batch_num}")
+        logger.debug(f"Time taken to compare batch {batch_num} using DeepDiff: {tt} seconds")
         return len(batch_pks), has_differences
 
     except Exception as e:
@@ -288,6 +283,9 @@ class MilvusPGClient(MilvusClient):
         self.sample_vector: bool = kwargs.pop("sample_vector", False)
         self.vector_sample_size: int = kwargs.pop("vector_sample_size", 8)
         self.pg_conn_str: str = kwargs.pop("pg_conn_str")
+        self.enable_lmdb: bool = kwargs.pop("enable_lmdb", True)
+        self.lmdb_path: str | None = kwargs.pop("lmdb_path", None)
+        self.lmdb_map_size: int = kwargs.pop("lmdb_map_size", 10 * 1024 * 1024 * 1024)
         uri = kwargs.get("uri", "")
         token = kwargs.get("token", "")
 
@@ -330,6 +328,13 @@ class MilvusPGClient(MilvusClient):
 
         # Thread synchronization lock for write operations
         self._lock: threading.Lock = threading.Lock()
+
+        # Initialize LMDB manager if enabled
+        self.lmdb_manager: LMDBManager | None = None
+        if self.enable_lmdb:
+            logger.info("Initializing LMDB manager for primary key tracking")
+            self.lmdb_manager = LMDBManager(db_path=self.lmdb_path, map_size=self.lmdb_map_size)
+            self.lmdb_manager.connect()
 
     @contextmanager
     def _get_pg_connection(self) -> Generator[PGConnection, None, None]:
@@ -394,7 +399,7 @@ class MilvusPGClient(MilvusClient):
         else:
             sampled = [vector[i] for i in indices]
 
-        return sampled
+        return sampled  # type: ignore[no-any-return]
 
     def _serialize_special_fields(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -779,6 +784,15 @@ class MilvusPGClient(MilvusClient):
             logger.error(f"Failed to drop PostgreSQL table: {e}")
             raise SyncError(f"Failed to drop PostgreSQL table: {e}") from e
 
+        # Clear LMDB data for this collection if enabled
+        if self.lmdb_manager:
+            try:
+                count = self.lmdb_manager.clear_collection(collection_name)
+                logger.debug(f"Cleared {count} LMDB entries for collection '{collection_name}'")
+            except Exception as e:
+                logger.error(f"Failed to clear LMDB data: {e}")
+                # Continue with Milvus drop even if LMDB clear fails
+
         # Drop Milvus collection
         milvus_start = time.time()
         try:
@@ -886,6 +900,17 @@ class MilvusPGClient(MilvusClient):
                 milvus_duration = time.time() - t0
                 logger.debug(f"Milvus insert completed in {milvus_duration:.3f}s")
 
+                # Sync to LMDB if enabled
+                if self.lmdb_manager:
+                    logger.debug("Syncing primary keys to LMDB")
+                    pk_states = []
+                    for record in data:
+                        if self.primary_field in record:
+                            pk_states.append((record[self.primary_field], PKStatus.EXISTS, PKOperation.INSERT))
+                    if pk_states:
+                        self.lmdb_manager.batch_record_pk_states(collection_name, pk_states)
+                        logger.debug(f"LMDB sync completed for {len(pk_states)} primary keys")
+
                 # Commit PostgreSQL transaction on successful Milvus insert
                 conn.commit()
                 logger.debug("PostgreSQL transaction committed successfully")
@@ -957,6 +982,17 @@ class MilvusPGClient(MilvusClient):
                 milvus_duration = time.time() - t0
                 logger.debug(f"Milvus upsert completed in {milvus_duration:.3f}s")
 
+                # Sync to LMDB if enabled
+                if self.lmdb_manager:
+                    logger.debug("Syncing primary keys to LMDB for upsert")
+                    pk_states = []
+                    for record in data:
+                        if self.primary_field in record:
+                            pk_states.append((record[self.primary_field], PKStatus.EXISTS, PKOperation.UPSERT))
+                    if pk_states:
+                        self.lmdb_manager.batch_record_pk_states(collection_name, pk_states)
+                        logger.debug(f"LMDB sync completed for {len(pk_states)} primary keys")
+
                 # Commit PostgreSQL transaction on successful Milvus upsert
                 conn.commit()
                 logger.debug("PostgreSQL transaction committed successfully")
@@ -1013,6 +1049,14 @@ class MilvusPGClient(MilvusClient):
                 result = super().delete(collection_name, ids=ids, **kwargs)
                 milvus_duration = time.time() - t0
                 logger.debug(f"Milvus delete completed in {milvus_duration:.3f}s")
+
+                # Sync to LMDB if enabled
+                if self.lmdb_manager:
+                    logger.debug("Syncing primary keys to LMDB for delete")
+                    pk_states = [(pk, PKStatus.DELETED, PKOperation.DELETE) for pk in ids]
+                    if pk_states:
+                        self.lmdb_manager.batch_record_pk_states(collection_name, pk_states)
+                        logger.debug(f"LMDB sync completed for {len(pk_states)} primary keys")
 
                 # Commit PostgreSQL transaction on successful Milvus delete
                 conn.commit()
@@ -1604,6 +1648,18 @@ class MilvusPGClient(MilvusClient):
     # ------------------------------------------------------------------
     # Entity comparison and data validation methods
     # ------------------------------------------------------------------
+    def _get_all_primary_keys_milvus(self, collection_name: str, batch_size: int = 1000) -> list:
+        """Internal method to get all primary keys from Milvus."""
+        return self.get_all_primary_keys_from_milvus(collection_name, batch_size)
+
+    def _get_all_primary_keys_pg(self, collection_name: str) -> list:
+        """Internal method to get all primary keys from PostgreSQL."""
+        with self._get_pg_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(f"SELECT {self.primary_field} FROM {collection_name};")
+                rows = cursor.fetchall()
+        return [r[0] for r in rows]
+
     def get_all_primary_keys_from_milvus(self, collection_name: str, batch_size: int = 1000) -> list:
         """
         Retrieve all primary key values from Milvus collection using query_iterator.
@@ -1774,6 +1830,28 @@ class MilvusPGClient(MilvusClient):
         pk_comparison = self.compare_primary_keys(collection_name)
         if pk_comparison["has_differences"]:
             logger.error("Primary key comparison failed - data comparison may be inaccurate")
+
+            # If LMDB is enabled, perform three-way validation to identify the source of error
+            if self.enable_lmdb and self.lmdb_manager:
+                logger.info("Performing three-way validation with LMDB to identify error source...")
+                validation_result = self.three_way_pk_validation(collection_name)
+
+                if validation_result["inconsistent_pks"] > 0:
+                    logger.error(
+                        f"Three-way validation found {validation_result['inconsistent_pks']} inconsistent PKs:"
+                    )
+                    logger.error(f"  - Milvus errors: {len(validation_result['milvus_errors'])} PKs")
+                    logger.error(f"  - PostgreSQL errors: {len(validation_result['pg_errors'])} PKs")
+                    logger.error(f"  - LMDB errors: {len(validation_result['lmdb_errors'])} PKs")
+
+                    # Log sample of errors for each database
+                    if validation_result["milvus_errors"]:
+                        logger.error(f"  Sample Milvus errors: {validation_result['milvus_errors'][:5]}")
+                    if validation_result["pg_errors"]:
+                        logger.error(f"  Sample PostgreSQL errors: {validation_result['pg_errors'][:5]}")
+                    if validation_result["lmdb_errors"]:
+                        logger.error(f"  Sample LMDB errors: {validation_result['lmdb_errors'][:5]}")
+
             return False
         else:
             logger.debug("Primary key comparison passed")
@@ -1970,6 +2048,131 @@ class MilvusPGClient(MilvusClient):
 
         return not has_any_differences
 
+    def three_way_pk_validation(self, collection_name: str, sample_size: int | None = None) -> dict[str, Any]:
+        """
+        Perform three-way primary key validation between Milvus, PostgreSQL, and LMDB.
+
+        This method uses LMDB as a tiebreaker when Milvus and PostgreSQL disagree.
+        The "majority vote" approach helps identify which database has incorrect data.
+
+        Parameters
+        ----------
+        collection_name : str
+            Name of the collection to validate
+        sample_size : int | None, optional
+            If provided, only validate a random sample of primary keys
+
+        Returns
+        -------
+        dict
+            Validation results including:
+            - total_pks: Total number of primary keys checked
+            - consistent_pks: Number of PKs consistent across all 3 databases
+            - inconsistent_pks: Number of PKs with inconsistencies
+            - milvus_errors: PKs where Milvus appears to be wrong
+            - pg_errors: PKs where PostgreSQL appears to be wrong
+            - lmdb_errors: PKs where LMDB appears to be wrong
+            - details: Detailed information about each inconsistency
+        """
+        if not self.lmdb_manager:
+            raise ValueError("LMDB is not enabled. Cannot perform three-way validation.")
+
+        self._get_schema(collection_name)
+        logger.info(f"Starting three-way PK validation for collection '{collection_name}'")
+
+        # Get primary keys from all three sources
+        logger.debug("Fetching primary keys from Milvus")
+        milvus_pks = set(self._get_all_primary_keys_milvus(collection_name))
+
+        logger.debug("Fetching primary keys from PostgreSQL")
+        pg_pks = set(self._get_all_primary_keys_pg(collection_name))
+
+        logger.debug("Fetching primary keys from LMDB")
+        lmdb_pks = set(self.lmdb_manager.get_collection_pks(collection_name, PKStatus.EXISTS))
+
+        # If sample size is specified, randomly sample PKs
+        all_pks = milvus_pks | pg_pks | lmdb_pks
+        if sample_size and len(all_pks) > sample_size:
+            import random
+
+            all_pks = set(random.sample(list(all_pks), sample_size))
+            milvus_pks = milvus_pks & all_pks
+            pg_pks = pg_pks & all_pks
+            lmdb_pks = lmdb_pks & all_pks
+
+        # Initialize result tracking
+        result: dict[str, Any] = {
+            "total_pks": len(all_pks),
+            "consistent_pks": 0,
+            "inconsistent_pks": 0,
+            "milvus_errors": [],
+            "pg_errors": [],
+            "lmdb_errors": [],
+            "details": [],
+        }
+
+        # Check each PK
+        for pk in all_pks:
+            in_milvus = pk in milvus_pks
+            in_pg = pk in pg_pks
+            in_lmdb = pk in lmdb_pks
+
+            # All three agree - consistent
+            if in_milvus == in_pg == in_lmdb:
+                result["consistent_pks"] += 1
+            else:
+                result["inconsistent_pks"] += 1
+
+                # Determine which database(s) are wrong using majority vote
+                vote_exists = sum([in_milvus, in_pg, in_lmdb])
+
+                # Majority says exists (2 or 3 votes)
+                if vote_exists >= 2:
+                    correct_state = "exists"
+                    if not in_milvus:
+                        result["milvus_errors"].append(pk)
+                    if not in_pg:
+                        result["pg_errors"].append(pk)
+                    if not in_lmdb:
+                        result["lmdb_errors"].append(pk)
+                # Majority says deleted (0 or 1 vote)
+                else:
+                    correct_state = "deleted"
+                    if in_milvus:
+                        result["milvus_errors"].append(pk)
+                    if in_pg:
+                        result["pg_errors"].append(pk)
+                    if in_lmdb:
+                        result["lmdb_errors"].append(pk)
+
+                # Add detailed information
+                detail = {
+                    "pk": pk,
+                    "in_milvus": in_milvus,
+                    "in_pg": in_pg,
+                    "in_lmdb": in_lmdb,
+                    "correct_state": correct_state,
+                    "vote_count": vote_exists,
+                }
+
+                # Get LMDB metadata if available
+                if self.lmdb_manager:
+                    lmdb_state = self.lmdb_manager.get_pk_state(collection_name, pk)
+                    if lmdb_state:
+                        detail["lmdb_metadata"] = lmdb_state
+
+                result["details"].append(detail)
+
+        # Log summary
+        logger.info(f"Three-way validation complete: {result['consistent_pks']}/{result['total_pks']} PKs consistent")
+        if result["inconsistent_pks"] > 0:
+            logger.warning(f"Found {result['inconsistent_pks']} inconsistent PKs")
+            logger.warning(f"Milvus errors: {len(result['milvus_errors'])}")
+            logger.warning(f"PostgreSQL errors: {len(result['pg_errors'])}")
+            logger.warning(f"LMDB errors: {len(result['lmdb_errors'])}")
+
+        return result
+
     def entity_compare(
         self,
         collection_name: str,
@@ -2051,6 +2254,16 @@ class MilvusPGClient(MilvusClient):
 
     def _cleanup_resources(self) -> None:
         """Internal method to cleanup resources, avoiding duplicate cleanup."""
+        # Close LMDB if enabled
+        try:
+            if hasattr(self, "lmdb_manager") and self.lmdb_manager:
+                self.lmdb_manager.close()
+                logger.debug("LMDB connection closed successfully")
+                self.lmdb_manager = None
+        except Exception as e:
+            logger.warning(f"Error closing LMDB connection: {e}")
+
+        # Close PostgreSQL pool
         try:
             if hasattr(self, "pg_pool") and self.pg_pool:
                 # Check if pool is already closed to avoid double-close warnings

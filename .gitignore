@@ -169,3 +169,7 @@ tmp/
 deployment
 volumes
 logs/
+
+# LMDB database files
+.pymilvus_pg_lmdb/
+.test_lmdb/

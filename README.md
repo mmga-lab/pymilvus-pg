@@ -9,6 +9,7 @@
 *   **Data Export**: Allows exporting collection data from the shadow PostgreSQL instance.
 *   **Query Correctness Validation**: Enables verification of Milvus query results by comparing them against PostgreSQL.
 *   **Milvus Data Correctness Validation**: Enables full data comparison between Milvus and PostgreSQL.
+*   **Three-Way Validation with LMDB**: Built-in LMDB integration (enabled by default) provides automatic error source identification when inconsistencies are detected.
 
 ## Installation
 

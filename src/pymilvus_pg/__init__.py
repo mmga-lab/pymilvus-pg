@@ -34,6 +34,7 @@ from .exceptions import (
     TransactionError,
     ValidationError,
 )
+from .lmdb_manager import LMDBManager, PKOperation, PKStatus
 from .logger_config import logger, set_logger_level
 from .milvus_pg_client import MilvusPGClient
 from .types import (
@@ -54,6 +55,10 @@ from .types import (
 __all__ = [
     # Main client
     "MilvusPGClient",
+    # LMDB Manager
+    "LMDBManager",
+    "PKStatus",
+    "PKOperation",
     # Logging
     "logger",
     "set_logger_level",
