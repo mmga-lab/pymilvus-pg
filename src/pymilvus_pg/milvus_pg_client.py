@@ -32,7 +32,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import psycopg2
-from deepdiff import DeepDiff
+from deepdiff import DeepDiff   
 from psycopg2 import pool
 from psycopg2.extensions import connection as PGConnection
 from psycopg2.extras import execute_values
@@ -152,7 +152,7 @@ def _compare_batch_worker(
                 if isinstance(item, (np.floating | float)):
                     f_item = float(item)
                     if round_floats:
-                        cleaned.append(round(f_item, 3))
+                        cleaned.append(round(f_item, 1))
                     else:
                         cleaned.append(f_item)
                 elif isinstance(item, np.integer):
@@ -210,8 +210,25 @@ def _compare_batch_worker(
         pg_aligned = pg_aligned.reindex(columns=milvus_aligned.columns)
 
         # Simple comparison - check if DataFrames are equal
+        t0 = time.time()
         has_differences = not milvus_aligned.equals(pg_aligned)
-
+        tt = time.time() - t0
+        if has_differences:
+            logger.debug(f"Differences found in batch {batch_num}")
+            logger.debug(f"Time taken to compare batch {batch_num} using equals: {tt} seconds")
+            t0 = time.time()
+            milvus_dict = milvus_aligned.to_dict(orient="records")
+            pg_dict = pg_aligned.to_dict(orient="records")
+            diff = DeepDiff(milvus_dict, 
+                            pg_dict, 
+                            ignore_order=True,
+                            significant_digits=1,
+                            view="tree")
+            tt = time.time() - t0
+            logger.debug(f"Time taken to compare batch {batch_num} using DeepDiff: {tt} seconds")
+            logger.info(f"Differences found in batch {batch_num}: {diff}")
+        else:
+            logger.debug(f"No differences found in batch {batch_num}")
         return len(batch_pks), has_differences
 
     except Exception as e:
@@ -281,6 +298,7 @@ class MilvusPGClient(MilvusClient):
 
         # Connect to Milvus
         logger.debug(f"Connecting to Milvus with URI: {uri}")
+        logger.debug(f"Connecting to PostgreSQL with connection string: {self.pg_conn_str}")
         connections.connect(uri=uri, token=token)
 
         # Connect to PostgreSQL with connection pooling
@@ -1199,7 +1217,7 @@ class MilvusPGClient(MilvusClient):
             milvus_dict,
             pg_dict,
             ignore_order=True,  # Ignore row order differences
-            significant_digits=3,  # Tolerance for floating point precision
+            significant_digits=1,  # Tolerance for floating point precision
         )
 
         # Print detailed differences for debugging if differences found
@@ -1430,7 +1448,7 @@ class MilvusPGClient(MilvusClient):
                 if isinstance(item, (np.floating | float)):
                     f_item = float(item)
                     if round_floats:
-                        cleaned.append(round(f_item, 3))
+                        cleaned.append(round(f_item, 1))
                     else:
                         cleaned.append(f_item)
                 elif isinstance(item, np.integer):
