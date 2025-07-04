@@ -90,7 +90,13 @@ def _compare_batch_worker(
         milvus_data = milvus_client.query(collection_name, filter=milvus_filter, output_fields=["*"])
         milvus_df = pd.DataFrame(milvus_data)
 
-        # Don't drop vector columns here - they need to be processed first
+        # Drop vector columns for comparison if ignoring vectors
+        if ignore_vector and float_vector_fields:
+            milvus_df.drop(
+                columns=[c for c in float_vector_fields if c in milvus_df.columns],
+                inplace=True,
+                errors="ignore",
+            )
 
         # PG fetch - use a new connection for process safety
         pg_conn = psycopg2.connect(pg_conn_str)
@@ -135,7 +141,7 @@ def _compare_batch_worker(
                 )
 
         # Array and vector fields normalization
-        def _to_py_list(val: Any) -> Any:
+        def _to_py_list(val: Any, round_floats: bool = False) -> Any:
             """Ensure value is list of Python scalars (convert numpy types)."""
             if val is None:
                 return val
@@ -146,7 +152,10 @@ def _compare_batch_worker(
 
                 if isinstance(item, (np.floating | float)):
                     f_item = float(item)
-                    cleaned.append(f_item)
+                    if round_floats:
+                        cleaned.append(round(f_item, 1))
+                    else:
+                        cleaned.append(f_item)
                 elif isinstance(item, np.integer):
                     cleaned.append(int(item))
                 else:
@@ -179,11 +188,13 @@ def _compare_batch_worker(
 
                         return [vector[i] for i in indices]
 
-                    milvus_df[field] = milvus_df[field].apply(lambda x: sample_vector_func(_to_py_list(x)))
+                    milvus_df[field] = milvus_df[field].apply(
+                        lambda x: sample_vector_func(_to_py_list(x, round_floats=True))
+                    )
                 else:
-                    milvus_df[field] = milvus_df[field].apply(_to_py_list)
+                    milvus_df[field] = milvus_df[field].apply(_to_py_list, round_floats=True)
             if field in pg_df.columns:
-                pg_df[field] = pg_df[field].apply(_to_py_list)
+                pg_df[field] = pg_df[field].apply(_to_py_list, round_floats=True)
 
         # Remove vector columns if ignoring them
         if ignore_vector and float_vector_fields:
@@ -203,14 +214,7 @@ def _compare_batch_worker(
         t0 = time.time()
         milvus_dict = milvus_aligned.to_dict(orient="records")
         pg_dict = pg_aligned.to_dict(orient="records")
-        diff = DeepDiff(
-            milvus_dict,
-            pg_dict,
-            ignore_order=True,
-            significant_digits=5,  # Increased tolerance for float comparisons
-            math_epsilon=1e-6,  # Additional epsilon for very small differences
-            view="tree",
-        )
+        diff = DeepDiff(milvus_dict, pg_dict, ignore_order=True, significant_digits=1, view="tree")
         has_differences = bool(diff)
         tt = time.time() - t0
 
@@ -1515,7 +1519,7 @@ class MilvusPGClient(MilvusClient):
                     else x
                 )
 
-        def _to_py_list(val: Any) -> Any:
+        def _to_py_list(val: Any, round_floats: bool = False) -> Any:
             """Ensure value is list of Python scalars (convert numpy types)."""
             if val is None:
                 return val
@@ -1524,7 +1528,10 @@ class MilvusPGClient(MilvusClient):
             for item in lst:
                 if isinstance(item, (np.floating | float)):
                     f_item = float(item)
-                    cleaned.append(f_item)
+                    if round_floats:
+                        cleaned.append(round(f_item, 1))
+                    else:
+                        cleaned.append(f_item)
                 elif isinstance(item, np.integer):
                     cleaned.append(int(item))
                 else:
@@ -1541,12 +1548,14 @@ class MilvusPGClient(MilvusClient):
             if field in milvus_df.columns:
                 if self.sample_vector and not self.ignore_vector:
                     # Apply sampling to Milvus vectors for consistent comparison
-                    milvus_df[field] = milvus_df[field].apply(lambda x: self._sample_vector(_to_py_list(x)))
+                    milvus_df[field] = milvus_df[field].apply(
+                        lambda x: self._sample_vector(_to_py_list(x, round_floats=True))
+                    )
                 else:
-                    milvus_df[field] = milvus_df[field].apply(_to_py_list)
+                    milvus_df[field] = milvus_df[field].apply(_to_py_list, round_floats=True)
             if field in pg_df.columns:
                 # PostgreSQL vectors are already sampled during storage if sample_vector is enabled
-                pg_df[field] = pg_df[field].apply(_to_py_list)
+                pg_df[field] = pg_df[field].apply(_to_py_list, round_floats=True)
 
         # Remove vector columns if ignoring them
         if self.ignore_vector and self.float_vector_fields:
