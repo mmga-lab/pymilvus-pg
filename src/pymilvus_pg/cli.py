@@ -81,10 +81,12 @@ def _delete_op(client: MilvusClient, collection: str) -> None:
     try:
         if _global_id == 0:
             return
+        # Select a random range of IDs that have been inserted
         start = random.randint(0, max(1, _global_id - DELETE_BATCH_SIZE))
-        ids = list(range(start, start + DELETE_BATCH_SIZE))
-        client.delete(collection, ids=ids)
-        logger.info(f"[DELETE] {len(ids)} rows, start id {start}")
+        ids = list(range(start, min(start + DELETE_BATCH_SIZE, _global_id)))
+        if ids:
+            client.delete(collection, ids=ids)
+            logger.info(f"[DELETE] {len(ids)} rows, start id {start}")
     except Exception as e:
         logger.error(f"[DELETE] Exception occurred: {e}")
     finally:
@@ -100,10 +102,12 @@ def _upsert_op(client: MilvusClient, collection: str) -> None:
     try:
         if _global_id == 0:
             return
+        # Select a random range of IDs that have been inserted
         start = random.randint(0, max(1, _global_id - UPSERT_BATCH_SIZE))
-        ids = list(range(start, start + UPSERT_BATCH_SIZE))
-        client.upsert(collection, _generate_data(ids, for_upsert=True))
-        logger.info(f"[UPSERT] {len(ids)} rows, start id {start}")
+        ids = list(range(start, min(start + UPSERT_BATCH_SIZE, _global_id)))
+        if ids:
+            client.upsert(collection, _generate_data(ids, for_upsert=True))
+            logger.info(f"[UPSERT] {len(ids)} rows, start id {start}")
     except Exception as e:
         logger.error(f"[UPSERT] Exception occurred: {e}")
     finally:
@@ -145,14 +149,6 @@ def worker_loop(client: MilvusClient, collection: str) -> None:
         time.sleep(random.uniform(0.05, 0.2))
 
 
-def get_max_id(client: MilvusClient, collection: str) -> int:
-    """Get the maximum ID from the collection to avoid primary key conflicts."""
-    # Use timestamp-based ID to avoid primary key conflicts
-    safe_start_id = int(time.time()) * 10000
-    logger.info(f"Using timestamp-based starting ID: {safe_start_id}")
-    return safe_start_id
-
-
 def create_collection(client: MilvusClient, name: str, drop_if_exists: bool = True) -> None:
     if client.has_collection(name):
         if drop_if_exists:
@@ -183,6 +179,67 @@ def create_collection(client: MilvusClient, name: str, drop_if_exists: bool = Tr
 def cli() -> None:
     """PyMilvus-PG CLI for data consistency validation."""
     pass
+
+
+@cli.command()
+@click.option(
+    "--shell",
+    type=click.Choice(["bash", "zsh", "fish", "powershell"]),
+    help="Shell type (auto-detected if not specified)",
+)
+@click.option("--install", is_flag=True, help="Install completion to shell config file")
+def completion(shell: str | None, install: bool) -> None:
+    """Generate shell completion script or install completion."""
+    import subprocess
+    import sys
+
+    if install:
+        # Install completion
+        if shell:
+            subprocess.run([sys.executable, "-m", "pymilvus_pg.cli", "completion", "--shell", shell], check=True)
+        else:
+            click.echo("Installing completion...")
+            # Auto-detect shell and install
+            try:
+                shell_name = os.path.basename(os.environ.get("SHELL", "bash"))
+                if shell_name in ["bash", "zsh", "fish"]:
+                    subprocess.run(
+                        [sys.executable, "-m", "pymilvus_pg.cli", "completion", "--shell", shell_name], check=True
+                    )
+                else:
+                    click.echo(f"Unsupported shell: {shell_name}")
+                    return
+            except Exception as e:
+                click.echo(f"Error installing completion: {e}")
+                return
+    else:
+        # Generate completion script
+        if not shell:
+            shell = os.path.basename(os.environ.get("SHELL", "bash"))
+
+        prog_name = "pymilvus-pg"
+
+        if shell == "bash":
+            click.echo(f'eval "$(_PYMILVUS_PG_COMPLETE=bash_source {prog_name})"')
+            click.echo("\n# Add this to your ~/.bashrc:")
+            click.echo(f'# eval "$(_PYMILVUS_PG_COMPLETE=bash_source {prog_name})"')
+        elif shell == "zsh":
+            click.echo(f'eval "$(_PYMILVUS_PG_COMPLETE=zsh_source {prog_name})"')
+            click.echo("\n# Add this to your ~/.zshrc:")
+            click.echo(f'# eval "$(_PYMILVUS_PG_COMPLETE=zsh_source {prog_name})"')
+        elif shell == "fish":
+            click.echo(f"eval (_PYMILVUS_PG_COMPLETE=fish_source {prog_name})")
+            click.echo("\n# Add this to your ~/.config/fish/config.fish:")
+            click.echo(f"# eval (_PYMILVUS_PG_COMPLETE=fish_source {prog_name})")
+        elif shell == "powershell":
+            click.echo(f'$env:_PYMILVUS_PG_COMPLETE="powershell_source"; {prog_name} | Out-String | Invoke-Expression')
+            click.echo("\n# Add this to your PowerShell profile")
+        else:
+            click.echo(f"Unsupported shell: {shell}")
+            return
+
+        click.echo("\n# Or run directly:")
+        click.echo(f"# {prog_name} completion --install")
 
 
 @cli.command()
@@ -222,19 +279,16 @@ def ingest(
         pg_conn_str=pg_conn,
     )
 
-    # Use provided collection name or generate a new one
-    collection_name = collection or f"{COLLECTION_NAME_PREFIX}_{int(time.time())}"
+    # Use provided collection name or default fixed name
+    collection_name = collection or COLLECTION_NAME_PREFIX
     logger.info(f"Using collection: {collection_name}")
 
     # Create or reuse collection
     create_collection(client, collection_name, drop_if_exists=drop_existing)
 
-    # Get max ID if using existing collection
-    if not drop_existing and client.has_collection(collection_name):
-        _global_id = get_max_id(client, collection_name)
-        logger.info(f"Starting ID counter from: {_global_id}")
-    else:
-        _global_id = 0
+    # Always use timestamp-based starting ID to avoid conflicts across runs
+    _global_id = int(time.time() * 1000)
+    logger.info(f"Starting with timestamp-based ID: {_global_id}")
 
     thread_list: list[threading.Thread] = []
     for i in range(threads):
@@ -300,8 +354,13 @@ def ingest(
 @cli.command()
 @click.option("--uri", type=str, default=None, help="Milvus server URI")
 @click.option("--pg-conn", type=str, default=None, help="PostgreSQL DSN")
-@click.option("--collection", type=str, required=True, help="Collection name to validate")
-@click.option("--full-scan", is_flag=True, help="Perform full scan validation")
+@click.option(
+    "--collection",
+    type=str,
+    default="data_correctness_checker",
+    help="Collection name to validate (default: data_correctness_checker)",
+)
+@click.option("--full-scan/--no-full-scan", default=True, help="Perform full scan validation (default: enabled)")
 def validate(uri: str | None, pg_conn: str | None, collection: str, full_scan: bool) -> None:
     """Validate data consistency between Milvus and PostgreSQL for a collection."""
     uri = uri or os.getenv("MILVUS_URI", "http://localhost:19530")

@@ -52,6 +52,44 @@ from .types import (
 __all__ = ["MilvusPGClient"]
 
 
+def _generate_detailed_diff_info(milvus_df: pd.DataFrame, pg_df: pd.DataFrame) -> list[str]:
+    """
+    Generate detailed difference information for debugging.
+
+    This function analyzes differences between aligned DataFrames and generates
+    detailed row-level and column-level difference information.
+
+    Parameters
+    ----------
+    milvus_df : pd.DataFrame
+        Aligned DataFrame from Milvus
+    pg_df : pd.DataFrame
+        Aligned DataFrame from PostgreSQL
+
+    Returns
+    -------
+    list[str]
+        List of detailed difference messages
+    """
+    diff_info = []
+
+    # Row-by-row differences
+    diff_info.append("--- ROW-BY-ROW DIFFERENCES ---")
+    # Identify rows where any column differs
+    diff_mask = ~(milvus_df.eq(pg_df))
+    for pk, row_mask in diff_mask.iterrows():
+        if row_mask.any():
+            diff_info.append(f"Primary Key: {pk} has row-level differences:")
+            for col, is_diff in row_mask.items():
+                if is_diff:
+                    m_val = milvus_df.at[pk, col]
+                    p_val = pg_df.at[pk, col]
+                    diff_info.append(f"  Column '{col}': milvus={m_val}, pg={p_val}")
+    diff_info.append("=== END ROW-BY-ROW DIFFERENCES ===")
+
+    return diff_info
+
+
 def _compare_batch_worker(
     batch_start: int,
     batch_pks: list,
@@ -69,7 +107,9 @@ def _compare_batch_worker(
     milvus_token: str,
     sample_vector: bool = False,
     vector_sample_size: int = 8,
-) -> tuple[int, bool]:
+    vector_precision_decimals: int = 3,
+    vector_comparison_significant_digits: int = 1,
+) -> tuple[int, bool, list[str]]:
     """
     Worker function for multiprocessing batch comparison.
 
@@ -141,7 +181,7 @@ def _compare_batch_worker(
                 )
 
         # Array and vector fields normalization
-        def _to_py_list(val: Any, round_floats: bool = False) -> Any:
+        def _to_py_list(val: Any, round_floats: bool = False, precision: int = vector_precision_decimals) -> Any:
             """Ensure value is list of Python scalars (convert numpy types)."""
             if val is None:
                 return val
@@ -153,7 +193,7 @@ def _compare_batch_worker(
                 if isinstance(item, (np.floating | float)):
                     f_item = float(item)
                     if round_floats:
-                        cleaned.append(round(f_item, 1))
+                        cleaned.append(round(f_item, precision))
                     else:
                         cleaned.append(f_item)
                 elif isinstance(item, np.integer):
@@ -210,26 +250,41 @@ def _compare_batch_worker(
         milvus_aligned = milvus_aligned.reindex(columns=pg_aligned.columns)
         pg_aligned = pg_aligned.reindex(columns=milvus_aligned.columns)
 
-        # Direct comparison using DeepDiff
+        # Direct comparison using DeepDiff with configurable precision
         t0 = time.time()
         milvus_dict = milvus_aligned.to_dict(orient="records")
         pg_dict = pg_aligned.to_dict(orient="records")
-        diff = DeepDiff(milvus_dict, pg_dict, ignore_order=True, significant_digits=1, view="tree")
+
+        # Use DeepDiff with configurable significant_digits for tolerance control
+        # Lower significant_digits = higher tolerance (e.g., 1 = compare only 1st decimal place)
+        diff = DeepDiff(
+            milvus_dict,
+            pg_dict,
+            ignore_order=True,
+            significant_digits=vector_comparison_significant_digits,
+            view="tree",
+        )
         has_differences = bool(diff)
         tt = time.time() - t0
 
         if has_differences:
             logger.debug(f"Differences found in batch {batch_num}")
             logger.info(f"Differences found in batch {batch_num}: {diff}")
+
+            # Generate detailed diff information
+            detailed_diff = _generate_detailed_diff_info(milvus_aligned, pg_aligned)
+
         else:
             logger.debug(f"No differences found in batch {batch_num}")
+            detailed_diff = []
+
         logger.debug(f"Time taken to compare batch {batch_num} using DeepDiff: {tt} seconds")
-        return len(batch_pks), has_differences
+        return len(batch_pks), has_differences, detailed_diff
 
     except Exception as e:
         # Use print instead of logger since we're in a separate process
         print(f"Error comparing batch {batch_num}: {e}")
-        return len(batch_pks), True
+        return len(batch_pks), True, []
 
 
 class MilvusPGClient(MilvusClient):
@@ -256,6 +311,9 @@ class MilvusPGClient(MilvusClient):
     vector_sample_size: int, optional
         Number of values to sample from each vector when sample_vector is True.
         Default is 8.
+    vector_comparison_significant_digits: int, optional
+        Number of significant digits for vector comparisons. Lower values = higher tolerance.
+        Default is 1 (compare only 1st decimal place).
 
     Attributes
     ----------
@@ -282,7 +340,8 @@ class MilvusPGClient(MilvusClient):
         self.ignore_vector: bool = kwargs.pop("ignore_vector", False)
         self.sample_vector: bool = kwargs.pop("sample_vector", False)
         self.vector_sample_size: int = kwargs.pop("vector_sample_size", 8)
-        self.vector_precision_decimals: int = kwargs.pop("vector_precision_decimals", 6)
+        self.vector_precision_decimals: int = kwargs.pop("vector_precision_decimals", 3)
+        self.vector_comparison_significant_digits: int = kwargs.pop("vector_comparison_significant_digits", 1)
         self.pg_conn_str: str = kwargs.pop("pg_conn_str")
         self.enable_lmdb: bool = kwargs.pop("enable_lmdb", True)
         self.lmdb_path: str | None = kwargs.pop("lmdb_path", None)
@@ -1289,6 +1348,12 @@ class MilvusPGClient(MilvusClient):
         # Align DataFrames to ensure identical structure
         milvus_aligned, pg_aligned = self._align_df(milvus_df, pg_df)
 
+        # First try pandas DataFrame.equals() for fast comparison
+        if milvus_aligned.equals(pg_aligned):
+            # Return empty DeepDiff object if DataFrames are equal
+            return DeepDiff({}, {})
+
+        # If not equal, use DeepDiff for detailed comparison
         # Convert to dictionaries for DeepDiff comparison
         milvus_dict = milvus_aligned.to_dict("list")
         pg_dict = pg_aligned.to_dict("list")
@@ -1321,19 +1386,12 @@ class MilvusPGClient(MilvusClient):
         pg_df : pd.DataFrame
             Aligned DataFrame from PostgreSQL
         """
-        # Row-by-row differences
-        logger.error("--- ROW-BY-ROW DIFFERENCES ---")
-        # Identify rows where any column differs
-        diff_mask = ~(milvus_df.eq(pg_df))
-        for pk, row_mask in diff_mask.iterrows():
-            if row_mask.any():
-                logger.error(f"Primary Key: {pk} has row-level differences:")
-                for col, is_diff in row_mask.items():
-                    if is_diff:
-                        m_val = milvus_df.at[pk, col]
-                        p_val = pg_df.at[pk, col]
-                        logger.error(f"  Column '{col}': milvus={m_val}, pg={p_val}")
-        logger.error("=== END ROW-BY-ROW DIFFERENCES ===")
+        # Use the shared helper function to generate detailed diff information
+        detailed_diff = _generate_detailed_diff_info(milvus_df, pg_df)
+
+        # Log each line of detailed diff information
+        for diff_line in detailed_diff:
+            logger.error(diff_line)
 
     def query_result_compare(
         self,
@@ -1529,7 +1587,7 @@ class MilvusPGClient(MilvusClient):
                 if isinstance(item, (np.floating | float)):
                     f_item = float(item)
                     if round_floats:
-                        cleaned.append(round(f_item, 1))
+                        cleaned.append(round(f_item, self.vector_precision_decimals))
                     else:
                         cleaned.append(f_item)
                 elif isinstance(item, np.integer):
@@ -1989,6 +2047,8 @@ class MilvusPGClient(MilvusClient):
                 self.token,
                 self.sample_vector,
                 self.vector_sample_size,
+                self.vector_precision_decimals,
+                self.vector_comparison_significant_digits,
             )
             batch_jobs.append(batch_job)
 
@@ -2007,13 +2067,17 @@ class MilvusPGClient(MilvusClient):
                 # Process completed batches
                 for future in as_completed(future_to_batch):
                     try:
-                        batch_size_actual, has_differences = future.result()
+                        batch_size_actual, has_differences, detailed_diff = future.result()
                         if has_differences:
                             has_any_differences = True
                             batch_job = future_to_batch[future]
                             batch_start = batch_job[0]
                             batch_num = batch_start // batch_size + 1
                             logger.error(f"Differences detected in batch {batch_num}")
+
+                            # Log detailed diff information
+                            for diff_line in detailed_diff:
+                                logger.error(diff_line)
 
                         compared += batch_size_actual
                         if compared in milestones:
