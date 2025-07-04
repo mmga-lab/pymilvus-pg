@@ -23,6 +23,7 @@ Example:
     ... )
 """
 
+from ._version import __version__
 from .exceptions import (
     CollectionNotFoundError,
     ConnectionError,
@@ -53,6 +54,8 @@ from .types import (
 )
 
 __all__ = [
+    # Version
+    "__version__",
     # Main client
     "MilvusPGClient",
     # LMDB Manager

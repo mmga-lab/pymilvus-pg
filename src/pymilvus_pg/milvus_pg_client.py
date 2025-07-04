@@ -282,6 +282,7 @@ class MilvusPGClient(MilvusClient):
         self.ignore_vector: bool = kwargs.pop("ignore_vector", False)
         self.sample_vector: bool = kwargs.pop("sample_vector", False)
         self.vector_sample_size: int = kwargs.pop("vector_sample_size", 8)
+        self.vector_precision_decimals: int = kwargs.pop("vector_precision_decimals", 6)
         self.pg_conn_str: str = kwargs.pop("pg_conn_str")
         self.enable_lmdb: bool = kwargs.pop("enable_lmdb", True)
         self.lmdb_path: str | None = kwargs.pop("lmdb_path", None)
@@ -401,6 +402,35 @@ class MilvusPGClient(MilvusClient):
 
         return sampled  # type: ignore[no-any-return]
 
+    def _round_vector_precision(self, vector: list | np.ndarray) -> list:
+        """
+        Round vector values to specified decimal places to ensure consistent precision.
+
+        This method helps eliminate floating-point precision inconsistencies between
+        Milvus and PostgreSQL by rounding all vector values to a fixed number of
+        decimal places during insertion.
+
+        Parameters
+        ----------
+        vector : list | np.ndarray
+            The input vector to round
+
+        Returns
+        -------
+        list
+            Vector with rounded values
+        """
+        if not isinstance(vector, list | np.ndarray) or len(vector) == 0:
+            return list(vector) if isinstance(vector, np.ndarray) else vector
+
+        # Round each value to specified decimal places
+        if isinstance(vector, np.ndarray):
+            rounded = [round(float(val), self.vector_precision_decimals) for val in vector]
+        else:
+            rounded = [round(float(val), self.vector_precision_decimals) for val in vector]
+
+        return rounded
+
     def _serialize_special_fields(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Serialize JSON and ARRAY fields to string format for PostgreSQL storage.
@@ -431,12 +461,20 @@ class MilvusPGClient(MilvusClient):
                 df_copy[field] = df_copy[field].apply(json.dumps)
                 logger.debug(f"Serialized ARRAY field: {field}")
 
-        # Sample vector fields if enabled
-        if self.sample_vector and not self.ignore_vector:
+        # Process vector fields if not ignored
+        if not self.ignore_vector:
             for field in self.float_vector_fields:
                 if field in df_copy.columns:
-                    df_copy[field] = df_copy[field].apply(self._sample_vector)
-                    logger.debug(f"Sampled vector field: {field} to {self.vector_sample_size} values")
+                    # Apply precision control to vector values
+                    df_copy[field] = df_copy[field].apply(self._round_vector_precision)
+                    logger.debug(
+                        f"Applied precision control to vector field: {field} (decimals: {self.vector_precision_decimals})"
+                    )
+
+                    # Sample vector fields if enabled
+                    if self.sample_vector:
+                        df_copy[field] = df_copy[field].apply(self._sample_vector)
+                        logger.debug(f"Sampled vector field: {field} to {self.vector_sample_size} values")
 
         return df_copy
 
@@ -506,14 +544,13 @@ class MilvusPGClient(MilvusClient):
                     if not isinstance(value, str):
                         value = json.dumps(value)
 
-                # Sample vector fields if enabled
-                elif (
-                    col in self.float_vector_fields
-                    and value is not None
-                    and self.sample_vector
-                    and not self.ignore_vector
-                ):
-                    value = self._sample_vector(value)
+                # Process vector fields if not ignored
+                elif col in self.float_vector_fields and value is not None and not self.ignore_vector:
+                    # Apply precision control to vector values
+                    value = self._round_vector_precision(value)
+                    # Sample vector fields if enabled
+                    if self.sample_vector:
+                        value = self._sample_vector(value)
 
                 processed_record.append(value)
             values.append(tuple(processed_record))

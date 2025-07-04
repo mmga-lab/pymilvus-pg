@@ -13,7 +13,7 @@ from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
 from pymilvus_pg import MilvusPGClient as MilvusClient
-from pymilvus_pg import logger
+from pymilvus_pg import __version__, logger
 
 DIMENSION = 8
 INSERT_BATCH_SIZE = 10000
@@ -179,6 +179,7 @@ def create_collection(client: MilvusClient, name: str, drop_if_exists: bool = Tr
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="pymilvus-pg")
 def cli() -> None:
     """PyMilvus-PG CLI for data consistency validation."""
     pass
