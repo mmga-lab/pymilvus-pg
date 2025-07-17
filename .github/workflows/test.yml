@@ -29,19 +29,6 @@ jobs:
       run: |
         pdm install -G test
 
-    - name: Start PostgreSQL
+    - name: Run tests
       run: |
-        echo "Starting PostgreSQL..."
-        docker compose -f tests/setup_env/pgsql/docker-compose.yml up -d --wait
-
-    - name: Start Milvus services
-      run: |
-        echo "Starting Milvus and its dependencies..."
-        docker compose -f tests/setup_env/milvus/docker-compose.yml up -d --wait
-
-    - name: Run demo operation tests
-      run: |
-        pdm run pytest tests/test_demo_operations.py -v
-      env:
-        MILVUS_URI: http://localhost:19530
-        PG_CONN: postgresql://postgres:admin@localhost:5432/default
+        make test
