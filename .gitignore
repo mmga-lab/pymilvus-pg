@@ -166,7 +166,7 @@ tmp/
 .benchmarks
 .vscode/
 # Project-specific ignores
-deployment
+
 volumes
 logs/
 
