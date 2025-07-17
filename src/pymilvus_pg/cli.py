@@ -251,6 +251,11 @@ def completion(shell: str | None, install: bool) -> None:
 @click.option("--pg-conn", type=str, default=None, help="PostgreSQL DSN")
 @click.option("--collection", type=str, default=None, help="Collection name (auto-generated if not specified)")
 @click.option("--drop-existing", is_flag=True, help="Drop existing collection before starting")
+@click.option(
+    "--include-vector",
+    is_flag=True,
+    help="Include vector fields in PostgreSQL operations (default: False)",
+)
 def ingest(
     threads: int,
     compare_interval: int,
@@ -260,6 +265,7 @@ def ingest(
     pg_conn: str | None,
     collection: str | None,
     drop_existing: bool,
+    include_vector: bool,
 ) -> None:
     """Continuously ingest data with periodic validation checks.
 
@@ -277,6 +283,7 @@ def ingest(
         uri=uri,
         token=token,
         pg_conn_str=pg_conn,
+        ignore_vector=not include_vector,
     )
 
     # Use provided collection name or default fixed name
@@ -361,12 +368,17 @@ def ingest(
     help="Collection name to validate (default: data_correctness_checker)",
 )
 @click.option("--full-scan/--no-full-scan", default=True, help="Perform full scan validation (default: enabled)")
-def validate(uri: str | None, pg_conn: str | None, collection: str, full_scan: bool) -> None:
+@click.option(
+    "--include-vector",
+    is_flag=True,
+    help="Include vector fields in PostgreSQL operations (default: False)",
+)
+def validate(uri: str | None, pg_conn: str | None, collection: str, full_scan: bool, include_vector: bool) -> None:
     """Validate data consistency between Milvus and PostgreSQL for a collection."""
     uri = uri or os.getenv("MILVUS_URI", "http://localhost:19530")
     pg_conn = pg_conn or os.getenv("PG_CONN", "postgresql://postgres:admin@localhost:5432/postgres")
 
-    client = MilvusClient(uri=uri, pg_conn_str=pg_conn)
+    client = MilvusClient(uri=uri, pg_conn_str=pg_conn, ignore_vector=not include_vector)
     logger.info(f"Verifying collection: {collection}")
     client.entity_compare(collection, full_scan=full_scan)
 

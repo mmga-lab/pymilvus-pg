@@ -107,7 +107,7 @@ def _compare_batch_worker(
     milvus_token: str,
     sample_vector: bool = False,
     vector_sample_size: int = 8,
-    vector_precision_decimals: int = 3,
+    vector_precision_decimals: int = 1,
     vector_comparison_significant_digits: int = 1,
 ) -> tuple[int, bool, list[str]]:
     """
@@ -2277,7 +2277,7 @@ class MilvusPGClient(MilvusClient):
     def entity_compare(
         self,
         collection_name: str,
-        batch_size: int = 1000,
+        batch_size: int = 10000,
         *,
         retry: int = 5,
         retry_interval: float = 5.0,
