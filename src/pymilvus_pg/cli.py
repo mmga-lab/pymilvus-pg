@@ -47,6 +47,7 @@ def _generate_data(id_list: list[int], for_upsert: bool = False) -> list[dict[st
     for _id in id_list:
         record = {
             "id": _id,
+            "category": f"category_{_id % 1000}",
             "name": f"name_{_id}{'_upserted' if for_upsert else ''}",
             "age": random.randint(18, 60) + (100 if for_upsert else 0),
             "json_field": {"attr1": _id, "attr2": f"val_{_id}"},
@@ -160,6 +161,7 @@ def create_collection(client: MilvusClient, name: str, drop_if_exists: bool = Tr
 
     schema = client.create_schema()
     schema.add_field("id", DataType.INT64, is_primary=True, auto_id=False)
+    schema.add_field("category", DataType.VARCHAR, max_length=256, is_partition_key=True)
     schema.add_field("name", DataType.VARCHAR, max_length=256)
     schema.add_field("age", DataType.INT64)
     schema.add_field("json_field", DataType.JSON)

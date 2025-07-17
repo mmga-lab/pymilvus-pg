@@ -48,7 +48,7 @@ class LMDBManager:
     for data validation between Milvus and PostgreSQL.
     """
 
-    def __init__(self, db_path: str | None = None, map_size: int = 10 * 1024 * 1024 * 1024):
+    def __init__(self, db_path: str | None = None, map_size: int = 100 * 1024 * 1024 * 1024):
         """
         Initialize LMDB manager.
 
@@ -57,7 +57,7 @@ class LMDBManager:
         db_path : str | None, optional
             Path to LMDB database directory. If None, uses default location.
         map_size : int, optional
-            Maximum size of the database in bytes, default 10GB.
+            Maximum size of the database in bytes, default 100GB.
         """
         if db_path is None:
             db_path = os.path.join(os.getcwd(), ".pymilvus_pg_lmdb")
