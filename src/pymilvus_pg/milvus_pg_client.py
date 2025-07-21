@@ -2182,16 +2182,16 @@ class MilvusPGClient(MilvusClient):
         logger.info(f"Starting three-way PK validation for collection '{collection_name}'")
 
         # Get primary keys from all three sources
-        logger.debug("Fetching primary keys from Milvus")
+        logger.info("Fetching primary keys from Milvus")
         milvus_pks = set(self._get_all_primary_keys_milvus(collection_name))
-        logger.debug(f"Milvus PKs: {len(milvus_pks)}")
-        logger.debug("Fetching primary keys from PostgreSQL")
+        logger.info(f"Milvus PKs: {len(milvus_pks)}")
+        logger.info("Fetching primary keys from PostgreSQL")
         pg_pks = set(self._get_all_primary_keys_pg(collection_name))
-        logger.debug(f"PostgreSQL PKs: {len(pg_pks)}")
+        logger.info(f"PostgreSQL PKs: {len(pg_pks)}")
 
-        logger.debug("Fetching primary keys from LMDB")
+        logger.info("Fetching primary keys from LMDB")
         lmdb_pks = set(self.lmdb_manager.get_collection_pks(collection_name, PKStatus.EXISTS))
-        logger.debug(f"LMDB PKs: {len(lmdb_pks)}")
+        logger.info(f"LMDB PKs: {len(lmdb_pks)}")
         # If sample size is specified, randomly sample PKs
         all_pks = milvus_pks | pg_pks | lmdb_pks
         if sample_size and len(all_pks) > sample_size:
