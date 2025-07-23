@@ -205,6 +205,42 @@ class LMDBManager:
                 }
                 txn.put(key, json.dumps(value).encode())
 
+    def batch_record_pk_states_in_transaction(
+        self,
+        txn: Any,
+        collection_name: str,
+        pk_states: list[tuple[Any, PKStatus, PKOperation]],
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Record states for multiple primary keys using an existing transaction.
+        
+        This method does not commit the transaction, allowing the caller to
+        coordinate commits across multiple operations.
+        
+        Parameters
+        ----------
+        txn : lmdb.Transaction
+            Active LMDB write transaction
+        collection_name : str
+            Name of the collection
+        pk_states : list[tuple]
+            List of (pk, status, operation) tuples
+        metadata : dict, optional
+            Additional metadata to store for all keys
+        """
+        timestamp = time.time()
+        
+        for pk, status, operation in pk_states:
+            key = f"{collection_name}:{pk}".encode()
+            value = {
+                "status": status.value,
+                "operation": operation.value,
+                "timestamp": timestamp,
+                "metadata": metadata or {},
+            }
+            txn.put(key, json.dumps(value).encode())
+
     def get_collection_pks(self, collection_name: str, status: PKStatus | None = None) -> list[Any]:
         """
         Get all primary keys for a collection, optionally filtered by status.

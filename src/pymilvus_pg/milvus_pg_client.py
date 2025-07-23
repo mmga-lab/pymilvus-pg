@@ -29,6 +29,7 @@ from functools import wraps
 from multiprocessing import cpu_count
 from typing import Any
 
+import lmdb
 import numpy as np
 import pandas as pd
 import psycopg2
@@ -978,46 +979,98 @@ class MilvusPGClient(MilvusClient):
 
         # Execute synchronized insert operations
         with self._get_pg_connection() as conn:
+            lmdb_txn = None
             try:
-                # Execute PostgreSQL batch insert using execute_values for performance
-                logger.debug("Starting PostgreSQL batch INSERT operation")
+                # Step 1: Execute PostgreSQL batch insert
+                logger.info(f"[INSERT] Step 1/3: Starting PostgreSQL insert for {len(values)} records")
                 t0 = time.time()
                 with conn.cursor() as cursor:
                     # Use dynamic page_size based on data size for better performance
                     page_size = min(2000, max(500, len(values) // 10))
                     execute_values(cursor, insert_sql, values, page_size=page_size)
                     pg_duration = time.time() - t0
-                    logger.debug(f"PostgreSQL batch INSERT completed: {cursor.rowcount} rows in {pg_duration:.3f}s")
+                    logger.info(f"[INSERT] Step 1/3: PostgreSQL insert completed - {cursor.rowcount} rows in {pg_duration:.3f}s")
 
-                # Execute Milvus insert operation
-                logger.debug("Starting Milvus insert operation")
-                t0 = time.time()
-                result = super().insert(collection_name, data, **kwargs)
-                milvus_duration = time.time() - t0
-                logger.debug(f"Milvus insert completed in {milvus_duration:.3f}s")
-
-                # Sync to LMDB if enabled
+                # Step 2: Prepare LMDB transaction if enabled
                 if self.lmdb_manager:
-                    logger.debug("Syncing primary keys to LMDB")
+                    logger.info(f"[INSERT] Step 2/3: Preparing LMDB transaction for {len(data)} records")
+                    t0 = time.time()
                     pk_states = []
                     for record in data:
                         if self.primary_field in record:
                             pk_states.append((record[self.primary_field], PKStatus.EXISTS, PKOperation.INSERT))
                     if pk_states:
-                        self.lmdb_manager.batch_record_pk_states(collection_name, pk_states)
-                        logger.debug(f"LMDB sync completed for {len(pk_states)} primary keys")
+                        try:
+                            # Create LMDB transaction but don't commit yet
+                            if not self.lmdb_manager._env:
+                                self.lmdb_manager.connect()
+                            lmdb_txn = self.lmdb_manager._env.begin(write=True)
+                            self.lmdb_manager.batch_record_pk_states_in_transaction(lmdb_txn, collection_name, pk_states)
+                            lmdb_duration = time.time() - t0
+                            logger.info(f"[INSERT] Step 2/3: LMDB transaction prepared - {len(pk_states)} keys in {lmdb_duration:.3f}s")
+                        except lmdb.MapFullError as e:
+                            logger.error(
+                                f"[INSERT] Step 2/3: LMDB preparation failed - MDB_MAP_FULL error. "
+                                f"Current map size: {self.lmdb_manager.map_size / 1024 / 1024 / 1024:.2f}GB. "
+                                f"Consider increasing map_size in LMDBManager initialization."
+                            )
+                            if lmdb_txn:
+                                lmdb_txn.abort()
+                            raise SyncError(
+                                f"LMDB sync failed due to insufficient space (MDB_MAP_FULL). "
+                                f"Current map size: {self.lmdb_manager.map_size / 1024 / 1024 / 1024:.2f}GB"
+                            ) from e
+                        except Exception as e:
+                            logger.error(f"[INSERT] Step 2/3: LMDB preparation failed - {type(e).__name__}: {e}")
+                            if lmdb_txn:
+                                lmdb_txn.abort()
+                            raise SyncError(f"LMDB preparation failed: {e}") from e
+                else:
+                    logger.info("[INSERT] Step 2/3: Skipping LMDB sync (not enabled)")
 
-                # Commit PostgreSQL transaction on successful Milvus insert
+                # Step 3: Execute Milvus insert (last, as it cannot be rolled back)
+                logger.info(f"[INSERT] Step 3/3: Starting Milvus insert for {len(data)} records")
+                t0 = time.time()
+                try:
+                    result = super().insert(collection_name, data, **kwargs)
+                    milvus_duration = time.time() - t0
+                    logger.info(f"[INSERT] Step 3/3: Milvus insert completed in {milvus_duration:.3f}s")
+                except Exception as e:
+                    logger.error(f"[INSERT] Step 3/3: Milvus insert failed - {type(e).__name__}: {e}")
+                    logger.error(f"[INSERT] PostgreSQL and LMDB changes will be rolled back")
+                    if lmdb_txn:
+                        lmdb_txn.abort()
+                        logger.info("[INSERT] LMDB transaction aborted")
+                    raise SyncError(f"Milvus insert failed: {e}") from e
+
+                # Commit both PostgreSQL and LMDB transactions after Milvus succeeds
+                if lmdb_txn:
+                    lmdb_txn.commit()
+                    logger.info("[INSERT] LMDB transaction committed")
                 conn.commit()
-                logger.debug("PostgreSQL transaction committed successfully")
+                logger.info(f"[INSERT] All operations completed successfully, all transactions committed")
                 return result
 
             except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
-                logger.error(f"PostgreSQL insert failed for collection '{collection_name}': {e}")
+                logger.error(f"[INSERT] Step 1/3: PostgreSQL insert failed - {type(e).__name__}: {e}")
+                logger.info("[INSERT] No changes were made to any database")
+                if lmdb_txn:
+                    lmdb_txn.abort()
                 raise SyncError(f"PostgreSQL insert failed: {e}") from e
+            except SyncError:
+                # Re-raise SyncError as-is (already logged)
+                logger.info("[INSERT] PostgreSQL transaction rolled back")
+                if lmdb_txn:
+                    lmdb_txn.abort()
+                    logger.info("[INSERT] LMDB transaction aborted")
+                raise
             except Exception as e:
-                logger.error(f"Milvus insert failed for collection '{collection_name}', PostgreSQL rolled back: {e}")
-                raise SyncError(f"Milvus insert failed, PostgreSQL rolled back: {e}") from e
+                logger.error(f"[INSERT] Unexpected error - {type(e).__name__}: {e}")
+                logger.info("[INSERT] PostgreSQL transaction rolled back")
+                if lmdb_txn:
+                    lmdb_txn.abort()
+                    logger.info("[INSERT] LMDB transaction aborted")
+                raise SyncError(f"Unexpected error during insert: {e}") from e
 
     @_synchronized
     def upsert(self, collection_name: str, data: EntityData, **kwargs: Any) -> Any:
@@ -1058,48 +1111,98 @@ class MilvusPGClient(MilvusClient):
 
         # Execute synchronized upsert operations
         with self._get_pg_connection() as conn:
+            lmdb_txn = None
             try:
-                # Execute PostgreSQL batch upsert
-                logger.debug("Starting PostgreSQL batch UPSERT operation")
+                # Step 1: Execute PostgreSQL batch upsert
+                logger.info(f"[UPSERT] Step 1/3: Starting PostgreSQL upsert for {len(values)} records")
                 t0 = time.time()
                 with conn.cursor() as cursor:
                     # Use dynamic page_size based on data size for better performance
                     page_size = min(2000, max(500, len(values) // 10))
                     execute_values(cursor, insert_sql, values, page_size=page_size)
                     pg_duration = time.time() - t0
-                    logger.debug(
-                        f"PostgreSQL batch UPSERT completed: {cursor.rowcount} rows affected in {pg_duration:.3f}s"
-                    )
+                    logger.info(f"[UPSERT] Step 1/3: PostgreSQL upsert completed - {cursor.rowcount} rows affected in {pg_duration:.3f}s")
 
-                # Execute Milvus upsert operation
-                logger.debug("Starting Milvus upsert operation")
-                t0 = time.time()
-                result = super().upsert(collection_name, data, **kwargs)
-                milvus_duration = time.time() - t0
-                logger.debug(f"Milvus upsert completed in {milvus_duration:.3f}s")
-
-                # Sync to LMDB if enabled
+                # Step 2: Prepare LMDB transaction if enabled
                 if self.lmdb_manager:
-                    logger.debug("Syncing primary keys to LMDB for upsert")
+                    logger.info(f"[UPSERT] Step 2/3: Preparing LMDB transaction for {len(data)} records")
+                    t0 = time.time()
                     pk_states = []
                     for record in data:
                         if self.primary_field in record:
                             pk_states.append((record[self.primary_field], PKStatus.EXISTS, PKOperation.UPSERT))
                     if pk_states:
-                        self.lmdb_manager.batch_record_pk_states(collection_name, pk_states)
-                        logger.debug(f"LMDB sync completed for {len(pk_states)} primary keys")
+                        try:
+                            # Create LMDB transaction but don't commit yet
+                            if not self.lmdb_manager._env:
+                                self.lmdb_manager.connect()
+                            lmdb_txn = self.lmdb_manager._env.begin(write=True)
+                            self.lmdb_manager.batch_record_pk_states_in_transaction(lmdb_txn, collection_name, pk_states)
+                            lmdb_duration = time.time() - t0
+                            logger.info(f"[UPSERT] Step 2/3: LMDB transaction prepared - {len(pk_states)} keys in {lmdb_duration:.3f}s")
+                        except lmdb.MapFullError as e:
+                            logger.error(
+                                f"[UPSERT] Step 2/3: LMDB preparation failed - MDB_MAP_FULL error. "
+                                f"Current map size: {self.lmdb_manager.map_size / 1024 / 1024 / 1024:.2f}GB. "
+                                f"Consider increasing map_size in LMDBManager initialization."
+                            )
+                            if lmdb_txn:
+                                lmdb_txn.abort()
+                            raise SyncError(
+                                f"LMDB sync failed due to insufficient space (MDB_MAP_FULL). "
+                                f"Current map size: {self.lmdb_manager.map_size / 1024 / 1024 / 1024:.2f}GB"
+                            ) from e
+                        except Exception as e:
+                            logger.error(f"[UPSERT] Step 2/3: LMDB preparation failed - {type(e).__name__}: {e}")
+                            if lmdb_txn:
+                                lmdb_txn.abort()
+                            raise SyncError(f"LMDB preparation failed: {e}") from e
+                else:
+                    logger.info("[UPSERT] Step 2/3: Skipping LMDB sync (not enabled)")
 
-                # Commit PostgreSQL transaction on successful Milvus upsert
+                # Step 3: Execute Milvus upsert (last, as it cannot be rolled back)
+                logger.info(f"[UPSERT] Step 3/3: Starting Milvus upsert for {len(data)} records")
+                t0 = time.time()
+                try:
+                    result = super().upsert(collection_name, data, **kwargs)
+                    milvus_duration = time.time() - t0
+                    logger.info(f"[UPSERT] Step 3/3: Milvus upsert completed in {milvus_duration:.3f}s")
+                except Exception as e:
+                    logger.error(f"[UPSERT] Step 3/3: Milvus upsert failed - {type(e).__name__}: {e}")
+                    logger.error(f"[UPSERT] PostgreSQL and LMDB changes will be rolled back")
+                    if lmdb_txn:
+                        lmdb_txn.abort()
+                        logger.info("[UPSERT] LMDB transaction aborted")
+                    raise SyncError(f"Milvus upsert failed: {e}") from e
+
+                # Commit both PostgreSQL and LMDB transactions after Milvus succeeds
+                if lmdb_txn:
+                    lmdb_txn.commit()
+                    logger.info("[UPSERT] LMDB transaction committed")
                 conn.commit()
-                logger.debug("PostgreSQL transaction committed successfully")
+                logger.info(f"[UPSERT] All operations completed successfully, all transactions committed")
                 return result
 
             except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
-                logger.error(f"PostgreSQL upsert failed for collection '{collection_name}': {e}")
+                logger.error(f"[UPSERT] Step 1/3: PostgreSQL upsert failed - {type(e).__name__}: {e}")
+                logger.info("[UPSERT] No changes were made to any database")
+                if lmdb_txn:
+                    lmdb_txn.abort()
                 raise SyncError(f"PostgreSQL upsert failed: {e}") from e
+            except SyncError:
+                # Re-raise SyncError as-is (already logged)
+                logger.info("[UPSERT] PostgreSQL transaction rolled back")
+                if lmdb_txn:
+                    lmdb_txn.abort()
+                    logger.info("[UPSERT] LMDB transaction aborted")
+                raise
             except Exception as e:
-                logger.error(f"Milvus upsert failed for collection '{collection_name}', PostgreSQL rolled back: {e}")
-                raise SyncError(f"Milvus upsert failed, PostgreSQL rolled back: {e}") from e
+                logger.error(f"[UPSERT] Unexpected error - {type(e).__name__}: {e}")
+                logger.info("[UPSERT] PostgreSQL transaction rolled back")
+                if lmdb_txn:
+                    lmdb_txn.abort()
+                    logger.info("[UPSERT] LMDB transaction aborted")
+                raise SyncError(f"Unexpected error during upsert: {e}") from e
 
     @_synchronized
     def delete(self, collection_name: str, ids: PrimaryKeyList, **kwargs: Any) -> Any:
@@ -1130,41 +1233,93 @@ class MilvusPGClient(MilvusClient):
 
         # Execute synchronized delete operations
         with self._get_pg_connection() as conn:
+            lmdb_txn = None
             try:
-                # Execute PostgreSQL delete
-                logger.debug("Starting PostgreSQL DELETE operation")
+                # Step 1: Execute PostgreSQL delete
+                logger.info(f"[DELETE] Step 1/3: Starting PostgreSQL delete for {len(ids)} records")
                 t0 = time.time()
                 with conn.cursor() as cursor:
                     cursor.execute(delete_sql, ids)
                     pg_duration = time.time() - t0
-                    logger.debug(f"PostgreSQL DELETE completed: {cursor.rowcount} rows deleted in {pg_duration:.3f}s")
+                    logger.info(f"[DELETE] Step 1/3: PostgreSQL delete completed - {cursor.rowcount} rows deleted in {pg_duration:.3f}s")
 
-                # Execute Milvus delete
-                logger.debug("Starting Milvus delete operation")
-                t0 = time.time()
-                result = super().delete(collection_name, ids=ids, **kwargs)
-                milvus_duration = time.time() - t0
-                logger.debug(f"Milvus delete completed in {milvus_duration:.3f}s")
-
-                # Sync to LMDB if enabled
+                # Step 2: Prepare LMDB transaction if enabled
                 if self.lmdb_manager:
-                    logger.debug("Syncing primary keys to LMDB for delete")
+                    logger.info(f"[DELETE] Step 2/3: Preparing LMDB transaction for {len(ids)} records")
+                    t0 = time.time()
                     pk_states = [(pk, PKStatus.DELETED, PKOperation.DELETE) for pk in ids]
                     if pk_states:
-                        self.lmdb_manager.batch_record_pk_states(collection_name, pk_states)
-                        logger.debug(f"LMDB sync completed for {len(pk_states)} primary keys")
+                        try:
+                            # Create LMDB transaction but don't commit yet
+                            if not self.lmdb_manager._env:
+                                self.lmdb_manager.connect()
+                            lmdb_txn = self.lmdb_manager._env.begin(write=True)
+                            self.lmdb_manager.batch_record_pk_states_in_transaction(lmdb_txn, collection_name, pk_states)
+                            lmdb_duration = time.time() - t0
+                            logger.info(f"[DELETE] Step 2/3: LMDB transaction prepared - {len(pk_states)} keys in {lmdb_duration:.3f}s")
+                        except lmdb.MapFullError as e:
+                            logger.error(
+                                f"[DELETE] Step 2/3: LMDB preparation failed - MDB_MAP_FULL error. "
+                                f"Current map size: {self.lmdb_manager.map_size / 1024 / 1024 / 1024:.2f}GB. "
+                                f"Consider increasing map_size in LMDBManager initialization."
+                            )
+                            if lmdb_txn:
+                                lmdb_txn.abort()
+                            raise SyncError(
+                                f"LMDB sync failed due to insufficient space (MDB_MAP_FULL). "
+                                f"Current map size: {self.lmdb_manager.map_size / 1024 / 1024 / 1024:.2f}GB"
+                            ) from e
+                        except Exception as e:
+                            logger.error(f"[DELETE] Step 2/3: LMDB preparation failed - {type(e).__name__}: {e}")
+                            if lmdb_txn:
+                                lmdb_txn.abort()
+                            raise SyncError(f"LMDB preparation failed: {e}") from e
+                else:
+                    logger.info("[DELETE] Step 2/3: Skipping LMDB sync (not enabled)")
 
-                # Commit PostgreSQL transaction on successful Milvus delete
+                # Step 3: Execute Milvus delete (last, as it cannot be rolled back)
+                logger.info(f"[DELETE] Step 3/3: Starting Milvus delete for {len(ids)} records")
+                t0 = time.time()
+                try:
+                    result = super().delete(collection_name, ids=ids, **kwargs)
+                    milvus_duration = time.time() - t0
+                    logger.info(f"[DELETE] Step 3/3: Milvus delete completed in {milvus_duration:.3f}s")
+                except Exception as e:
+                    logger.error(f"[DELETE] Step 3/3: Milvus delete failed - {type(e).__name__}: {e}")
+                    logger.error(f"[DELETE] PostgreSQL and LMDB changes will be rolled back")
+                    if lmdb_txn:
+                        lmdb_txn.abort()
+                        logger.info("[DELETE] LMDB transaction aborted")
+                    raise SyncError(f"Milvus delete failed: {e}") from e
+
+                # Commit both PostgreSQL and LMDB transactions after Milvus succeeds
+                if lmdb_txn:
+                    lmdb_txn.commit()
+                    logger.info("[DELETE] LMDB transaction committed")
                 conn.commit()
-                logger.debug("PostgreSQL transaction committed successfully")
+                logger.info(f"[DELETE] All operations completed successfully, all transactions committed")
                 return result
 
             except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
-                logger.error(f"PostgreSQL delete failed for collection '{collection_name}': {e}")
+                logger.error(f"[DELETE] Step 1/3: PostgreSQL delete failed - {type(e).__name__}: {e}")
+                logger.info("[DELETE] No changes were made to any database")
+                if lmdb_txn:
+                    lmdb_txn.abort()
                 raise SyncError(f"PostgreSQL delete failed: {e}") from e
+            except SyncError:
+                # Re-raise SyncError as-is (already logged)
+                logger.info("[DELETE] PostgreSQL transaction rolled back")
+                if lmdb_txn:
+                    lmdb_txn.abort()
+                    logger.info("[DELETE] LMDB transaction aborted")
+                raise
             except Exception as e:
-                logger.error(f"Milvus delete failed for collection '{collection_name}', PostgreSQL rolled back: {e}")
-                raise SyncError(f"Milvus delete failed, PostgreSQL rolled back: {e}") from e
+                logger.error(f"[DELETE] Unexpected error - {type(e).__name__}: {e}")
+                logger.info("[DELETE] PostgreSQL transaction rolled back")
+                if lmdb_txn:
+                    lmdb_txn.abort()
+                    logger.info("[DELETE] LMDB transaction aborted")
+                raise SyncError(f"Unexpected error during delete: {e}") from e
 
     # ------------------------------------------------------------------
     # Read operations and validation helpers
