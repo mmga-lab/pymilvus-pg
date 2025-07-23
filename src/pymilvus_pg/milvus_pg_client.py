@@ -2022,7 +2022,7 @@ class MilvusPGClient(MilvusClient):
         """Execute concurrent batch comparison of entities using multiprocessing."""
         total_pks = len(pks)
         # Use fewer processes than CPU cores to avoid overwhelming the system
-        max_workers = min(cpu_count() - 1, (total_pks + batch_size - 1) // batch_size, 8)
+        max_workers = min(cpu_count() - 1, (total_pks + batch_size - 1) // batch_size, 16)
         max_workers = max(1, max_workers)  # Ensure at least 1 worker
         compared = 0
 
