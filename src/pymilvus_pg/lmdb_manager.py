@@ -214,10 +214,10 @@ class LMDBManager:
     ) -> None:
         """
         Record states for multiple primary keys using an existing transaction.
-        
+
         This method does not commit the transaction, allowing the caller to
         coordinate commits across multiple operations.
-        
+
         Parameters
         ----------
         txn : lmdb.Transaction
@@ -230,7 +230,7 @@ class LMDBManager:
             Additional metadata to store for all keys
         """
         timestamp = time.time()
-        
+
         for pk, status, operation in pk_states:
             key = f"{collection_name}:{pk}".encode()
             value = {

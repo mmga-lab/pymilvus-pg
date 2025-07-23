@@ -122,13 +122,23 @@ def _compare_batch_worker(
 
     batch_num = batch_start // batch_size + 1
 
+    # Create a simple logger for worker processes
+    import logging
+
+    worker_logger = logging.getLogger(f"worker_batch_{batch_num}")
+
     try:
+        worker_logger.debug(f"Worker starting batch {batch_num} with {len(batch_pks)} records")
+
         # Create Milvus client for this process
         milvus_client = MilvusClient(uri=milvus_uri, token=milvus_token)
+        worker_logger.debug(f"Milvus client created for batch {batch_num}")
 
         # Milvus fetch
+        worker_logger.debug(f"Querying Milvus for batch {batch_num}")
         milvus_filter = f"{primary_field} in {list(batch_pks)}"
         milvus_data = milvus_client.query(collection_name, filter=milvus_filter, output_fields=["*"])
+        worker_logger.debug(f"Retrieved {len(milvus_data)} records from Milvus for batch {batch_num}")
         milvus_df = pd.DataFrame(milvus_data)
 
         # Drop vector columns for comparison if ignoring vectors
@@ -140,19 +150,23 @@ def _compare_batch_worker(
             )
 
         # PG fetch - use a new connection for process safety
+        worker_logger.debug(f"Connecting to PostgreSQL for batch {batch_num}")
         pg_conn = psycopg2.connect(pg_conn_str)
         try:
             placeholder = ", ".join(["%s"] * len(batch_pks))
             with pg_conn.cursor() as cursor:
+                worker_logger.debug(f"Querying PostgreSQL for batch {batch_num}")
                 cursor.execute(
                     f"SELECT * FROM {collection_name} WHERE {primary_field} IN ({placeholder});",
                     batch_pks,
                 )
                 pg_rows = cursor.fetchall()
                 colnames = [desc[0] for desc in cursor.description] if cursor.description else []
+            worker_logger.debug(f"Retrieved {len(pg_rows)} records from PostgreSQL for batch {batch_num}")
             pg_df = pd.DataFrame(pg_rows, columns=colnames or [])
         finally:
             pg_conn.close()
+            worker_logger.debug(f"PostgreSQL connection closed for batch {batch_num}")
 
         # Compare data - create minimal comparison logic
         # Align DataFrames for comparison
@@ -989,7 +1003,9 @@ class MilvusPGClient(MilvusClient):
                     page_size = min(2000, max(500, len(values) // 10))
                     execute_values(cursor, insert_sql, values, page_size=page_size)
                     pg_duration = time.time() - t0
-                    logger.info(f"[INSERT] Step 1/3: PostgreSQL insert completed - {cursor.rowcount} rows in {pg_duration:.3f}s")
+                    logger.info(
+                        f"[INSERT] Step 1/3: PostgreSQL insert completed - {cursor.rowcount} rows in {pg_duration:.3f}s"
+                    )
 
                 # Step 2: Prepare LMDB transaction if enabled
                 if self.lmdb_manager:
@@ -1005,9 +1021,13 @@ class MilvusPGClient(MilvusClient):
                             if not self.lmdb_manager._env:
                                 self.lmdb_manager.connect()
                             lmdb_txn = self.lmdb_manager._env.begin(write=True)
-                            self.lmdb_manager.batch_record_pk_states_in_transaction(lmdb_txn, collection_name, pk_states)
+                            self.lmdb_manager.batch_record_pk_states_in_transaction(
+                                lmdb_txn, collection_name, pk_states
+                            )
                             lmdb_duration = time.time() - t0
-                            logger.info(f"[INSERT] Step 2/3: LMDB transaction prepared - {len(pk_states)} keys in {lmdb_duration:.3f}s")
+                            logger.info(
+                                f"[INSERT] Step 2/3: LMDB transaction prepared - {len(pk_states)} keys in {lmdb_duration:.3f}s"
+                            )
                         except lmdb.MapFullError as e:
                             logger.error(
                                 f"[INSERT] Step 2/3: LMDB preparation failed - MDB_MAP_FULL error. "
@@ -1037,7 +1057,7 @@ class MilvusPGClient(MilvusClient):
                     logger.info(f"[INSERT] Step 3/3: Milvus insert completed in {milvus_duration:.3f}s")
                 except Exception as e:
                     logger.error(f"[INSERT] Step 3/3: Milvus insert failed - {type(e).__name__}: {e}")
-                    logger.error(f"[INSERT] PostgreSQL and LMDB changes will be rolled back")
+                    logger.error("[INSERT] PostgreSQL and LMDB changes will be rolled back")
                     if lmdb_txn:
                         lmdb_txn.abort()
                         logger.info("[INSERT] LMDB transaction aborted")
@@ -1048,7 +1068,7 @@ class MilvusPGClient(MilvusClient):
                     lmdb_txn.commit()
                     logger.info("[INSERT] LMDB transaction committed")
                 conn.commit()
-                logger.info(f"[INSERT] All operations completed successfully, all transactions committed")
+                logger.info("[INSERT] All operations completed successfully, all transactions committed")
                 return result
 
             except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
@@ -1121,7 +1141,9 @@ class MilvusPGClient(MilvusClient):
                     page_size = min(2000, max(500, len(values) // 10))
                     execute_values(cursor, insert_sql, values, page_size=page_size)
                     pg_duration = time.time() - t0
-                    logger.info(f"[UPSERT] Step 1/3: PostgreSQL upsert completed - {cursor.rowcount} rows affected in {pg_duration:.3f}s")
+                    logger.info(
+                        f"[UPSERT] Step 1/3: PostgreSQL upsert completed - {cursor.rowcount} rows affected in {pg_duration:.3f}s"
+                    )
 
                 # Step 2: Prepare LMDB transaction if enabled
                 if self.lmdb_manager:
@@ -1137,9 +1159,13 @@ class MilvusPGClient(MilvusClient):
                             if not self.lmdb_manager._env:
                                 self.lmdb_manager.connect()
                             lmdb_txn = self.lmdb_manager._env.begin(write=True)
-                            self.lmdb_manager.batch_record_pk_states_in_transaction(lmdb_txn, collection_name, pk_states)
+                            self.lmdb_manager.batch_record_pk_states_in_transaction(
+                                lmdb_txn, collection_name, pk_states
+                            )
                             lmdb_duration = time.time() - t0
-                            logger.info(f"[UPSERT] Step 2/3: LMDB transaction prepared - {len(pk_states)} keys in {lmdb_duration:.3f}s")
+                            logger.info(
+                                f"[UPSERT] Step 2/3: LMDB transaction prepared - {len(pk_states)} keys in {lmdb_duration:.3f}s"
+                            )
                         except lmdb.MapFullError as e:
                             logger.error(
                                 f"[UPSERT] Step 2/3: LMDB preparation failed - MDB_MAP_FULL error. "
@@ -1169,7 +1195,7 @@ class MilvusPGClient(MilvusClient):
                     logger.info(f"[UPSERT] Step 3/3: Milvus upsert completed in {milvus_duration:.3f}s")
                 except Exception as e:
                     logger.error(f"[UPSERT] Step 3/3: Milvus upsert failed - {type(e).__name__}: {e}")
-                    logger.error(f"[UPSERT] PostgreSQL and LMDB changes will be rolled back")
+                    logger.error("[UPSERT] PostgreSQL and LMDB changes will be rolled back")
                     if lmdb_txn:
                         lmdb_txn.abort()
                         logger.info("[UPSERT] LMDB transaction aborted")
@@ -1180,7 +1206,7 @@ class MilvusPGClient(MilvusClient):
                     lmdb_txn.commit()
                     logger.info("[UPSERT] LMDB transaction committed")
                 conn.commit()
-                logger.info(f"[UPSERT] All operations completed successfully, all transactions committed")
+                logger.info("[UPSERT] All operations completed successfully, all transactions committed")
                 return result
 
             except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
@@ -1241,7 +1267,9 @@ class MilvusPGClient(MilvusClient):
                 with conn.cursor() as cursor:
                     cursor.execute(delete_sql, ids)
                     pg_duration = time.time() - t0
-                    logger.info(f"[DELETE] Step 1/3: PostgreSQL delete completed - {cursor.rowcount} rows deleted in {pg_duration:.3f}s")
+                    logger.info(
+                        f"[DELETE] Step 1/3: PostgreSQL delete completed - {cursor.rowcount} rows deleted in {pg_duration:.3f}s"
+                    )
 
                 # Step 2: Prepare LMDB transaction if enabled
                 if self.lmdb_manager:
@@ -1254,9 +1282,13 @@ class MilvusPGClient(MilvusClient):
                             if not self.lmdb_manager._env:
                                 self.lmdb_manager.connect()
                             lmdb_txn = self.lmdb_manager._env.begin(write=True)
-                            self.lmdb_manager.batch_record_pk_states_in_transaction(lmdb_txn, collection_name, pk_states)
+                            self.lmdb_manager.batch_record_pk_states_in_transaction(
+                                lmdb_txn, collection_name, pk_states
+                            )
                             lmdb_duration = time.time() - t0
-                            logger.info(f"[DELETE] Step 2/3: LMDB transaction prepared - {len(pk_states)} keys in {lmdb_duration:.3f}s")
+                            logger.info(
+                                f"[DELETE] Step 2/3: LMDB transaction prepared - {len(pk_states)} keys in {lmdb_duration:.3f}s"
+                            )
                         except lmdb.MapFullError as e:
                             logger.error(
                                 f"[DELETE] Step 2/3: LMDB preparation failed - MDB_MAP_FULL error. "
@@ -1286,7 +1318,7 @@ class MilvusPGClient(MilvusClient):
                     logger.info(f"[DELETE] Step 3/3: Milvus delete completed in {milvus_duration:.3f}s")
                 except Exception as e:
                     logger.error(f"[DELETE] Step 3/3: Milvus delete failed - {type(e).__name__}: {e}")
-                    logger.error(f"[DELETE] PostgreSQL and LMDB changes will be rolled back")
+                    logger.error("[DELETE] PostgreSQL and LMDB changes will be rolled back")
                     if lmdb_txn:
                         lmdb_txn.abort()
                         logger.info("[DELETE] LMDB transaction aborted")
@@ -1297,7 +1329,7 @@ class MilvusPGClient(MilvusClient):
                     lmdb_txn.commit()
                     logger.info("[DELETE] LMDB transaction committed")
                 conn.commit()
-                logger.info(f"[DELETE] All operations completed successfully, all transactions committed")
+                logger.info("[DELETE] All operations completed successfully, all transactions committed")
                 return result
 
             except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
@@ -1996,11 +2028,14 @@ class MilvusPGClient(MilvusClient):
         logger.info(f"Comparing primary keys for collection '{collection_name}'")
 
         # Get all primary keys from Milvus
-        logger.debug("Retrieving primary keys from Milvus")
+        logger.info("Retrieving primary keys from Milvus...")
+        milvus_start_time = time.time()
         milvus_pks = set(self.get_all_primary_keys_from_milvus(collection_name))
+        milvus_duration = time.time() - milvus_start_time
+        logger.info(f"Retrieved {len(milvus_pks)} primary keys from Milvus in {milvus_duration:.3f}s")
 
         # Get all primary keys from PostgreSQL
-        logger.debug("Retrieving primary keys from PostgreSQL")
+        logger.info("Retrieving primary keys from PostgreSQL...")
         t0 = time.time()
         with self._get_pg_connection() as conn:
             with conn.cursor() as cursor:
@@ -2008,7 +2043,7 @@ class MilvusPGClient(MilvusClient):
                 pg_pks_rows = cursor.fetchall()
         pg_pks = set(r[0] for r in pg_pks_rows)
         pg_duration = time.time() - t0
-        logger.debug(f"Retrieved {len(pg_pks)} primary keys from PostgreSQL in {pg_duration:.3f}s")
+        logger.info(f"Retrieved {len(pg_pks)} primary keys from PostgreSQL in {pg_duration:.3f}s")
 
         # Calculate differences
         only_in_milvus = milvus_pks - pg_pks
@@ -2076,14 +2111,21 @@ class MilvusPGClient(MilvusClient):
         bool
             True if primary keys match, False otherwise
         """
-        logger.debug("Stage 1: Primary key comparison")
+        logger.info("Stage 1: Primary key comparison - Starting primary key validation")
+        logger.info(
+            f"Validating primary key consistency between Milvus and PostgreSQL for collection '{collection_name}'"
+        )
+
         pk_comparison = self.compare_primary_keys(collection_name)
         if pk_comparison["has_differences"]:
             logger.error("Primary key comparison failed - data comparison may be inaccurate")
+            logger.info(
+                f"Primary key differences detected: {pk_comparison['only_in_milvus'].__len__()} keys only in Milvus, {pk_comparison['only_in_pg'].__len__()} keys only in PostgreSQL"
+            )
 
             # If LMDB is enabled, perform three-way validation to identify the source of error
             if self.enable_lmdb and self.lmdb_manager:
-                logger.info("Performing three-way validation with LMDB to identify error source...")
+                logger.info("LMDB validation enabled - performing three-way validation to identify error source...")
                 validation_result = self.three_way_pk_validation(collection_name)
 
                 if validation_result["inconsistent_pks"] > 0:
@@ -2104,7 +2146,10 @@ class MilvusPGClient(MilvusClient):
 
             return False
         else:
-            logger.debug("Primary key comparison passed")
+            logger.info("Stage 1: Primary key comparison - PASSED")
+            logger.info(
+                f"Primary key validation successful: {pk_comparison['common_count']} matching keys found in both systems"
+            )
             return True
 
     def _perform_count_comparison(
@@ -2118,16 +2163,27 @@ class MilvusPGClient(MilvusClient):
         tuple[bool, int, int]
             Tuple of (count_match, milvus_total, pg_total)
         """
-        logger.debug("Stage 2: Record count comparison with retry logic")
+        logger.info("Stage 2: Record count comparison - Starting count validation with retry logic")
+        logger.info(f"Count comparison configuration: max_attempts={retry}, retry_interval={retry_interval}s")
+
         milvus_total = 0
         pg_total = 0
         for attempt in range(retry):
+            logger.info(f"Attempt {attempt + 1}/{retry}: Fetching record counts from both systems...")
+            count_start_time = time.time()
             count_res = self.count(collection_name)
+            count_duration = time.time() - count_start_time
+
             milvus_total = count_res["milvus_count"]
             pg_total = count_res["pg_count"]
 
+            logger.info(
+                f"Count results (attempt {attempt + 1}): Milvus={milvus_total}, PostgreSQL={pg_total} (retrieved in {count_duration:.3f}s)"
+            )
+
             if milvus_total == pg_total:
-                logger.debug(f"Count comparison passed on attempt {attempt + 1}")
+                logger.info(f"Stage 2: Count comparison - PASSED on attempt {attempt + 1}")
+                logger.info(f"Both systems have exactly {milvus_total} records")
                 break
 
             logger.warning(
@@ -2136,11 +2192,14 @@ class MilvusPGClient(MilvusClient):
                 f"Retrying in {retry_interval}s..."
             )
             if attempt < retry - 1:
+                logger.info(f"Waiting {retry_interval}s before next attempt...")
                 time.sleep(retry_interval)
 
         count_match = milvus_total == pg_total
         if not count_match:
-            logger.error(f"Count mismatch after {retry} attempts: Milvus ({milvus_total}) vs PostgreSQL ({pg_total})")
+            logger.error(f"Stage 2: Count comparison - FAILED after {retry} attempts")
+            logger.error(f"Final count mismatch: Milvus ({milvus_total}) vs PostgreSQL ({pg_total})")
+            logger.error(f"Count difference: {abs(milvus_total - pg_total)} records")
         return count_match, milvus_total, pg_total
 
     def _perform_full_data_comparison(self, collection_name: str, batch_size: int) -> bool:
@@ -2152,22 +2211,29 @@ class MilvusPGClient(MilvusClient):
         bool
             True if all data matches, False otherwise
         """
-        logger.debug("Stage 3: Full data comparison")
+        logger.info("Stage 3: Full data comparison - Starting comprehensive data validation")
         t0 = time.time()
 
         # Get primary keys for batch processing
+        logger.info("Retrieving primary keys for full data comparison...")
+        pk_start_time = time.time()
         with self._get_pg_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(f"SELECT {self.primary_field} FROM {collection_name};")
                 pks_rows = cursor.fetchall()
         pks = [r[0] for r in pks_rows]
+        pk_duration = time.time() - pk_start_time
 
         total_pks = len(pks)
+        logger.info(f"Retrieved {total_pks} primary keys for comparison in {pk_duration:.3f}s")
+
         if total_pks == 0:
-            logger.info(f"No entities to compare for collection '{collection_name}'")
+            logger.info(f"No entities to compare for collection '{collection_name}' - validation complete")
             return True
 
-        logger.info(f"Starting full data comparison for {total_pks} entities using {batch_size} batch size")
+        estimated_batches = (total_pks + batch_size - 1) // batch_size
+        logger.info(f"Starting full data comparison for {total_pks} entities")
+        logger.info(f"Comparison configuration: batch_size={batch_size}, estimated_batches={estimated_batches}")
 
         return self._execute_concurrent_comparison(collection_name, pks, batch_size, t0)
 
@@ -2177,8 +2243,14 @@ class MilvusPGClient(MilvusClient):
         """Execute concurrent batch comparison of entities using multiprocessing."""
         total_pks = len(pks)
         # Use fewer processes than CPU cores to avoid overwhelming the system
-        max_workers = min(cpu_count() - 1, (total_pks + batch_size - 1) // batch_size, 16)
+        # For very large datasets, limit workers more aggressively to prevent resource exhaustion
+        suggested_workers = cpu_count() - 1
+        if total_pks > 1000000:  # For datasets larger than 1M records
+            suggested_workers = min(suggested_workers, 4)  # Limit to 4 workers
+        max_workers = min(suggested_workers, (total_pks + batch_size - 1) // batch_size, 16)
         max_workers = max(1, max_workers)  # Ensure at least 1 worker
+
+        logger.info(f"Dataset size: {total_pks} records, adjusting worker count for stability")
         compared = 0
 
         # Create batch jobs for multiprocessing
@@ -2210,54 +2282,100 @@ class MilvusPGClient(MilvusClient):
         has_any_differences = False
         milestones = {max(1, total_pks // 4), max(1, total_pks // 2), max(1, (total_pks * 3) // 4), total_pks}
 
-        logger.info(f"Starting concurrent comparison with {max_workers} processes for {len(batch_jobs)} batches")
+        logger.info(f"Concurrent comparison setup: {max_workers} worker processes, {len(batch_jobs)} batches")
+        logger.info("Progress milestones will be reported at: 25%, 50%, 75%, 100%")
+        logger.info("Starting concurrent data comparison...")
 
         try:
+            logger.info(f"Creating process pool with {max_workers} workers...")
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                logger.info("Process pool created successfully")
+
                 # Submit all batch jobs
-                future_to_batch = {
-                    executor.submit(_compare_batch_worker, *batch_job): batch_job for batch_job in batch_jobs
-                }
+                logger.info(f"Submitting {len(batch_jobs)} batch jobs to process pool...")
+                future_to_batch = {}
+                for i, batch_job in enumerate(batch_jobs):
+                    if i % 100 == 0:  # Log every 100 submissions
+                        logger.info(f"Submitted {i}/{len(batch_jobs)} batch jobs...")
+                    future = executor.submit(_compare_batch_worker, *batch_job)
+                    future_to_batch[future] = batch_job
+
+                logger.info(f"All {len(batch_jobs)} batch jobs submitted successfully")
 
                 # Process completed batches
-                for future in as_completed(future_to_batch):
+                logger.info("Starting to process batch results...")
+                batches_completed = 0
+                last_log_time = time.time()
+
+                for future in as_completed(future_to_batch, timeout=300):  # 5 minute timeout per batch
                     try:
                         batch_size_actual, has_differences, detailed_diff = future.result()
+                        batches_completed += 1
+                        batch_job = future_to_batch[future]
+                        batch_start = batch_job[0]
+                        batch_num = batch_start // batch_size + 1
+
                         if has_differences:
                             has_any_differences = True
-                            batch_job = future_to_batch[future]
-                            batch_start = batch_job[0]
-                            batch_num = batch_start // batch_size + 1
-                            logger.error(f"Differences detected in batch {batch_num}")
+                            logger.error(
+                                f"Batch {batch_num}/{len(batch_jobs)}: Differences detected ({batch_size_actual} records)"
+                            )
 
                             # Log detailed diff information
                             for diff_line in detailed_diff:
                                 logger.error(diff_line)
+                        else:
+                            logger.debug(
+                                f"Batch {batch_num}/{len(batch_jobs)}: No differences found ({batch_size_actual} records)"
+                            )
 
                         compared += batch_size_actual
+
+                        # Regular progress updates
+                        current_time = time.time()
+                        if current_time - last_log_time > 30:  # Log every 30 seconds
+                            logger.info(
+                                f"Heartbeat: {batches_completed}/{len(batch_jobs)} batches completed, {compared}/{total_pks} records processed"
+                            )
+                            last_log_time = current_time
+
                         if compared in milestones:
                             logger.info(
-                                f"Comparison progress: {compared}/{total_pks} ({(compared * 100) // total_pks}%) done."
+                                f"Progress: {compared}/{total_pks} ({(compared * 100) // total_pks}%) compared, "
+                                f"{batches_completed}/{len(batch_jobs)} batches completed"
                             )
 
                     except Exception as e:
+                        batches_completed += 1
                         logger.error(f"Batch comparison failed: {e}")
                         has_any_differences = True
 
+        except TimeoutError as e:
+            logger.error(f"Process pool execution timed out: {e}")
+            logger.error(f"Completed {batches_completed}/{len(batch_jobs)} batches before timeout")
+            # Fallback to single-threaded comparison
+            logger.info("Concurrent comparison timed out - falling back to single-threaded comparison")
+            return self._execute_single_threaded_comparison(collection_name, pks, batch_size)
         except Exception as e:
             logger.error(f"Process pool execution failed: {e}")
+            logger.error(f"Completed {batches_completed}/{len(batch_jobs)} batches before failure")
             # Fallback to single-threaded comparison
-            logger.info("Falling back to single-threaded comparison")
+            logger.info("Concurrent comparison failed - falling back to single-threaded comparison")
             return self._execute_single_threaded_comparison(collection_name, pks, batch_size)
 
-        logger.info(f"Entity comparison completed for collection '{collection_name}'.")
-        logger.info(f"Entity comparison completed in {time.time() - start_time:.3f} s.")
+        total_duration = time.time() - start_time
+        logger.info(f"Stage 3: Full data comparison completed in {total_duration:.3f}s")
+        logger.info(f"Comparison summary: {total_pks} records processed across {len(batch_jobs)} batches")
 
         if has_any_differences:
-            logger.error(f"Entity comparison found differences for collection '{collection_name}'.")
+            logger.error("Stage 3: Full data comparison - FAILED")
+            logger.error(
+                f"Data inconsistencies detected between Milvus and PostgreSQL for collection '{collection_name}'"
+            )
             return False
         else:
-            logger.info(f"Entity comparison successful - no differences found for collection '{collection_name}'.")
+            logger.info("Stage 3: Full data comparison - PASSED")
+            logger.info(f"All {total_pks} records are consistent between Milvus and PostgreSQL")
             return True
 
     def _execute_single_threaded_comparison(self, collection_name: str, pks: list, batch_size: int) -> bool:
@@ -2265,14 +2383,15 @@ class MilvusPGClient(MilvusClient):
         total_pks = len(pks)
         has_any_differences = False
 
-        logger.info(f"Running single-threaded comparison for {total_pks} entities")
+        total_batches = (total_pks + batch_size - 1) // batch_size
+        logger.info(f"Single-threaded comparison setup: {total_pks} entities, {total_batches} batches")
+        logger.info(f"Batch size: {batch_size} records per batch")
 
         for batch_start in range(0, total_pks, batch_size):
             batch_pks = pks[batch_start : batch_start + batch_size]
             batch_num = batch_start // batch_size + 1
-            total_batches = (total_pks + batch_size - 1) // batch_size
 
-            logger.info(f"Processing batch {batch_num}/{total_batches}")
+            logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch_pks)} records)...")
 
             try:
                 # Use original comparison logic
@@ -2469,30 +2588,48 @@ class MilvusPGClient(MilvusClient):
             True if comparison passed, False if differences were found
         """
         self._get_schema(collection_name)
-        logger.info(f"Starting entity comparison for collection '{collection_name}'")
+        logger.info("=== ENTITY COMPARISON STARTED ===")
+        logger.info(f"Collection: '{collection_name}'")
+        logger.info(f"Comparison mode: {'Full scan' if full_scan else 'Count-only'}")
+        logger.info(f"Primary key validation: {'Enabled' if compare_pks_first else 'Disabled'}")
 
         # Validate parameters
         self._validate_comparison_parameters(
             collection_name, batch_size, retry, retry_interval, full_scan, compare_pks_first
         )
 
+        validation_stages = []
+
         # Stage 1: Primary key comparison (if enabled)
         if compare_pks_first:
-            if not self._perform_primary_key_comparison(collection_name):
-                if not full_scan:
-                    return False
+            pk_result = self._perform_primary_key_comparison(collection_name)
+            validation_stages.append(f"Primary key validation: {'PASSED' if pk_result else 'FAILED'}")
+            if not pk_result and not full_scan:
+                logger.info("=== ENTITY COMPARISON COMPLETED ===")
+                logger.info("Result: FAILED (primary key mismatch)")
+                return False
 
         # Stage 2: Count comparison with retry logic
         count_match, milvus_total, pg_total = self._perform_count_comparison(collection_name, retry, retry_interval)
+        validation_stages.append(f"Count validation: {'PASSED' if count_match else 'FAILED'}")
 
         # Stage 3: Full data comparison (if requested)
         if not full_scan:
             if count_match:
-                logger.info(f"Count check passed: {milvus_total} records in both systems")
+                logger.info(f"Count validation passed: {milvus_total} records in both systems")
+            logger.info("=== ENTITY COMPARISON COMPLETED ===")
+            logger.info(f"Validation stages: {' | '.join(validation_stages)}")
+            logger.info(f"Result: {'PASSED' if count_match else 'FAILED'}")
             return count_match
 
         # Perform detailed entity comparison
-        return self._perform_full_data_comparison(collection_name, batch_size)
+        data_result = self._perform_full_data_comparison(collection_name, batch_size)
+        validation_stages.append(f"Full data validation: {'PASSED' if data_result else 'FAILED'}")
+
+        logger.info("=== ENTITY COMPARISON COMPLETED ===")
+        logger.info(f"Validation stages: {' | '.join(validation_stages)}")
+        logger.info(f"Result: {'PASSED' if data_result else 'FAILED'}")
+        return data_result
 
     # ------------------------------------------------------------------
     # Context manager support
