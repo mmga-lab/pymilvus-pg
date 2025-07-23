@@ -82,12 +82,26 @@ def _delete_op(client: MilvusClient, collection: str) -> None:
     try:
         if _global_id == 0:
             return
-        # Select a random range of IDs that have been inserted
-        start = random.randint(0, max(1, _global_id - DELETE_BATCH_SIZE))
-        ids = list(range(start, min(start + DELETE_BATCH_SIZE, _global_id)))
+        
+        # Query actual existing IDs from PostgreSQL before deletion
+        if hasattr(client, '_get_pg_connection'):
+            with client._get_pg_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Get random sample of existing IDs from PostgreSQL
+                    cursor.execute(
+                        f"SELECT {client.primary_field} FROM {collection} "
+                        f"ORDER BY RANDOM() LIMIT {DELETE_BATCH_SIZE}"
+                    )
+                    result = cursor.fetchall()
+                    ids = [row[0] for row in result] if result else []
+        else:
+            # Fallback to old logic if PostgreSQL connection is not available
+            start = random.randint(0, max(1, _global_id - DELETE_BATCH_SIZE))
+            ids = list(range(start, min(start + DELETE_BATCH_SIZE, _global_id)))
+        
         if ids:
             client.delete(collection, ids=ids)
-            logger.info(f"[DELETE] {len(ids)} rows, start id {start}")
+            logger.info(f"[DELETE] Attempted {len(ids)} rows from PostgreSQL query")
     except Exception as e:
         logger.error(f"[DELETE] Exception occurred: {e}")
     finally:
