@@ -40,7 +40,7 @@ from psycopg2.extras import execute_values
 from pymilvus import CollectionSchema, DataType, MilvusClient, connections
 
 from .exceptions import ConnectionError as MilvusPGConnectionError
-from .exceptions import FilterConversionError, SyncError
+from .exceptions import FilterConversionError, SchemaError, SyncError
 from .lmdb_manager import LMDBManager, PKOperation, PKStatus
 from .logger_config import logger
 from .types import (
@@ -128,17 +128,26 @@ def _compare_batch_worker(
     worker_logger = logging.getLogger(f"worker_batch_{batch_num}")
 
     try:
-        worker_logger.debug(f"Worker starting batch {batch_num} with {len(batch_pks)} records")
+        import time
+
+        start_time = time.time()
+        worker_logger.info(f"Worker starting batch {batch_num} with {len(batch_pks)} records")
 
         # Create Milvus client for this process
+        client_start = time.time()
         milvus_client = MilvusClient(uri=milvus_uri, token=milvus_token)
-        worker_logger.debug(f"Milvus client created for batch {batch_num}")
+        client_time = time.time() - client_start
+        worker_logger.info(f"Milvus client created for batch {batch_num} in {client_time:.2f}s")
 
         # Milvus fetch
-        worker_logger.debug(f"Querying Milvus for batch {batch_num}")
+        milvus_start = time.time()
+        worker_logger.info(f"Querying Milvus for batch {batch_num}")
         milvus_filter = f"{primary_field} in {list(batch_pks)}"
         milvus_data = milvus_client.query(collection_name, filter=milvus_filter, output_fields=["*"])
-        worker_logger.debug(f"Retrieved {len(milvus_data)} records from Milvus for batch {batch_num}")
+        milvus_time = time.time() - milvus_start
+        worker_logger.info(
+            f"Retrieved {len(milvus_data)} records from Milvus for batch {batch_num} in {milvus_time:.2f}s"
+        )
         milvus_df = pd.DataFrame(milvus_data)
 
         # Drop vector columns for comparison if ignoring vectors
@@ -150,25 +159,32 @@ def _compare_batch_worker(
             )
 
         # PG fetch - use a new connection for process safety
-        worker_logger.debug(f"Connecting to PostgreSQL for batch {batch_num}")
+        pg_start = time.time()
+        worker_logger.info(f"Connecting to PostgreSQL for batch {batch_num}")
         pg_conn = psycopg2.connect(pg_conn_str)
         try:
             placeholder = ", ".join(["%s"] * len(batch_pks))
             with pg_conn.cursor() as cursor:
-                worker_logger.debug(f"Querying PostgreSQL for batch {batch_num}")
+                worker_logger.info(f"Querying PostgreSQL for batch {batch_num}")
                 cursor.execute(
                     f"SELECT * FROM {collection_name} WHERE {primary_field} IN ({placeholder});",
                     batch_pks,
                 )
                 pg_rows = cursor.fetchall()
                 colnames = [desc[0] for desc in cursor.description] if cursor.description else []
-            worker_logger.debug(f"Retrieved {len(pg_rows)} records from PostgreSQL for batch {batch_num}")
+            pg_time = time.time() - pg_start
+            worker_logger.info(
+                f"Retrieved {len(pg_rows)} records from PostgreSQL for batch {batch_num} in {pg_time:.2f}s"
+            )
             pg_df = pd.DataFrame(pg_rows, columns=colnames or [])
         finally:
             pg_conn.close()
-            worker_logger.debug(f"PostgreSQL connection closed for batch {batch_num}")
+            worker_logger.info(f"PostgreSQL connection closed for batch {batch_num}")
 
         # Compare data - create minimal comparison logic
+        comparison_start = time.time()
+        worker_logger.info(f"Starting data comparison for batch {batch_num}")
+
         # Align DataFrames for comparison
         if primary_field and primary_field in milvus_df.columns and primary_field not in milvus_df.index.names:
             milvus_df.set_index(primary_field, inplace=True)
@@ -281,24 +297,35 @@ def _compare_batch_worker(
         )
         has_differences = bool(diff)
         tt = time.time() - t0
+        comparison_time = time.time() - comparison_start
+        total_time = time.time() - start_time
 
         if has_differences:
-            logger.debug(f"Differences found in batch {batch_num}")
-            logger.info(f"Differences found in batch {batch_num}: {diff}")
+            worker_logger.info(f"Differences found in batch {batch_num}")
+            worker_logger.info(f"Differences found in batch {batch_num}: {diff}")
 
             # Generate detailed diff information
             detailed_diff = _generate_detailed_diff_info(milvus_aligned, pg_aligned)
 
         else:
-            logger.debug(f"No differences found in batch {batch_num}")
+            worker_logger.info(f"No differences found in batch {batch_num}")
             detailed_diff = []
 
-        logger.debug(f"Time taken to compare batch {batch_num} using DeepDiff: {tt} seconds")
+        worker_logger.info(
+            f"Batch {batch_num} comparison completed in {comparison_time:.2f}s (DeepDiff: {tt:.2f}s, total: {total_time:.2f}s)"
+        )
         return len(batch_pks), has_differences, detailed_diff
 
     except Exception as e:
-        # Use print instead of logger since we're in a separate process
-        print(f"Error comparing batch {batch_num}: {e}")
+        # Use both print and logger since we're in a separate process
+        import traceback
+
+        error_msg = f"Error comparing batch {batch_num}: {e}"
+        traceback_msg = traceback.format_exc()
+        print(error_msg)
+        print(f"Traceback: {traceback_msg}")
+        worker_logger.error(error_msg)
+        worker_logger.error(f"Traceback: {traceback_msg}")
         return len(batch_pks), True, []
 
 
@@ -370,8 +397,9 @@ class MilvusPGClient(MilvusClient):
         self.token = token
 
         # Connect to Milvus
-        logger.debug(f"Connecting to Milvus with URI: {uri}")
-        logger.debug(f"Connecting to PostgreSQL with connection string: {self.pg_conn_str}")
+        logger.info("Initializing MilvusPGClient with connections:")
+        logger.info(f"  Milvus URI: {uri}")
+        logger.info(f"  PostgreSQL connection string: {self.pg_conn_str}")
         connections.connect(uri=uri, token=token)
 
         # Connect to PostgreSQL with connection pooling
@@ -762,6 +790,13 @@ class MilvusPGClient(MilvusClient):
             self.fields_name_list.append(field.name)
             if field.is_primary:
                 self.primary_field = field.name
+                # Validate that auto_id is not enabled - PyMilvus-PG doesn't support auto_id
+                if hasattr(field, "auto_id") and field.auto_id:
+                    raise SchemaError(
+                        f"Primary key field '{field.name}' has auto_id=True. "
+                        f"PyMilvus-PG does not support auto_id fields because it requires explicit "
+                        f"primary key values for synchronization between Milvus and PostgreSQL."
+                    )
             if field.dtype == DataType.FLOAT_VECTOR:
                 self.float_vector_fields.append(field.name)
             if field.dtype == DataType.ARRAY:
@@ -771,22 +806,22 @@ class MilvusPGClient(MilvusClient):
             if field.dtype == DataType.VARCHAR:
                 self.varchar_fields.append(field.name)
 
-    @staticmethod
-    def _milvus_dtype_to_pg(milvus_type: DataType) -> str:
+    def _milvus_dtype_to_pg(self, field_info: Any) -> str:
         """
-        Map Milvus DataType to equivalent PostgreSQL type.
+        Convert Milvus field to PostgreSQL type string with enhanced support.
 
         Parameters
         ----------
-        milvus_type : DataType
-            Milvus field data type
+        field_info : Any
+            Milvus field object with dtype and other attributes
 
         Returns
         -------
         str
-            Corresponding PostgreSQL data type string
+            PostgreSQL data type string
         """
-        mapping = {
+        # Base type mapping - expanded for all vector types
+        type_mapping = {
             DataType.BOOL: "BOOLEAN",
             DataType.INT8: "SMALLINT",
             DataType.INT16: "SMALLINT",
@@ -796,10 +831,226 @@ class MilvusPGClient(MilvusClient):
             DataType.DOUBLE: "DOUBLE PRECISION",
             DataType.VARCHAR: "VARCHAR",
             DataType.JSON: "JSONB",
+            # Vector types - expanded support
             DataType.FLOAT_VECTOR: "DOUBLE PRECISION[]",
-            DataType.ARRAY: "JSONB",  # Fallback – store as JSON if unknown element type
+            DataType.BINARY_VECTOR: "BIT VARYING",  # PostgreSQL bit string
+            DataType.SPARSE_FLOAT_VECTOR: "JSONB",  # Store sparse vector as JSON
+            # Array types
+            DataType.ARRAY: "JSONB",  # Store as JSON for flexibility
         }
-        return mapping.get(milvus_type, "TEXT")
+
+        base_type = type_mapping.get(field_info.dtype, "TEXT")
+
+        # Handle VARCHAR max_length
+        if field_info.dtype == DataType.VARCHAR and hasattr(field_info, "max_length"):
+            base_type = f"VARCHAR({field_info.max_length})"
+
+        # Handle BIT VARYING dimension for binary vectors
+        elif field_info.dtype == DataType.BINARY_VECTOR and hasattr(field_info, "dim"):
+            base_type = f"BIT VARYING({field_info.dim})"
+
+        return base_type
+
+    def _build_pg_column_def(self, field_info: Any) -> str:
+        """
+        Build complete PostgreSQL column definition including constraints.
+
+        Parameters
+        ----------
+        field_info : Any
+            Milvus field object
+
+        Returns
+        -------
+        str
+            Complete PostgreSQL column definition
+        """
+        pg_type = self._milvus_dtype_to_pg(field_info)
+        col_def = f'"{field_info.name}" {pg_type}'
+
+        # Add constraints based on field properties
+        # Note: We handle nullable/default in application layer for proper Milvus semantics
+        if field_info.is_primary:
+            col_def += " PRIMARY KEY"
+        elif not getattr(field_info, "nullable", False):
+            # Only add NOT NULL if explicitly non-nullable and not primary
+            col_def += " NOT NULL"
+
+        return col_def
+
+    def _prepare_pg_records(self, data: EntityData, schema: CollectionSchema) -> list[dict[str, Any]]:
+        """
+        Prepare PostgreSQL records from Milvus data, handling nullable/default values.
+
+        This method implements the application-layer handling of nullable and default
+        values to maintain consistency with Milvus semantics.
+
+        Parameters
+        ----------
+        data : EntityData
+            Original data from Milvus insert/upsert
+        schema : CollectionSchema
+            Collection schema with field definitions
+
+        Returns
+        -------
+        list[dict[str, Any]]
+            Processed records ready for PostgreSQL insertion
+        """
+        pg_records = []
+        defined_fields = {f.name: f for f in schema.fields}
+
+        # Debug: Check input data before processing
+        if data:
+            logger.debug(f"_prepare_pg_records input sample: {data[0]}")
+            logger.debug(f"Schema fields: {list(defined_fields.keys())}")
+            logger.debug(f"Input data keys: {list(data[0].keys())}")
+            missing_fields = set(defined_fields.keys()) - set(data[0].keys())
+            extra_fields = set(data[0].keys()) - set(defined_fields.keys())
+            if missing_fields:
+                logger.warning(f"Fields in schema but not in data (will use defaults/nulls): {missing_fields}")
+            if extra_fields:
+                logger.warning(f"Fields in data but not in schema: {extra_fields}")
+
+            # Check for complete mismatch - likely a schema/data generation issue
+            if len(missing_fields) > len(defined_fields) * 0.5:
+                raise SyncError(
+                    f"Data schema mismatch detected! "
+                    f"Expected fields: {list(defined_fields.keys())} "
+                    f"but got: {list(data[0].keys())}. "
+                    f"This usually means the CLI is using wrong schema configuration."
+                )
+
+        for milvus_record in data:
+            pg_record = {}
+            dynamic_data = {}
+
+            # Process defined fields
+            for field_name, field in defined_fields.items():
+                # Skip vector fields if ignored
+                if self.ignore_vector and field.dtype in [
+                    DataType.FLOAT_VECTOR,
+                    DataType.BINARY_VECTOR,
+                    DataType.SPARSE_FLOAT_VECTOR,
+                ]:
+                    continue
+
+                if field_name in milvus_record:
+                    # User provided a value (including None)
+                    value = milvus_record[field_name]
+
+                    # Handle special vector type serialization
+                    if field.dtype == DataType.SPARSE_FLOAT_VECTOR and value is not None:
+                        # Convert sparse vector dict to JSON
+                        pg_record[field_name] = json.dumps(value)
+                    elif field.dtype == DataType.BINARY_VECTOR and value is not None:
+                        # Convert binary vector to bit string
+                        bit_string = "".join(str(bit) for bit in value)
+                        pg_record[field_name] = bit_string
+                    elif field.dtype == DataType.JSON and value is not None:
+                        # Ensure JSON fields are properly serialized
+                        if isinstance(value, dict | list):
+                            pg_record[field_name] = json.dumps(value)
+                        else:
+                            pg_record[field_name] = value
+                    elif field.dtype == DataType.ARRAY and value is not None:
+                        # ARRAY fields are stored as JSONB in PostgreSQL
+                        if isinstance(value, list):
+                            pg_record[field_name] = json.dumps(value)
+                        else:
+                            pg_record[field_name] = value
+                    else:
+                        # Handle any ValueField or other complex types
+                        if hasattr(value, "__class__") and "ValueField" in str(type(value)):
+                            # Extract actual value from ValueField
+                            if hasattr(value, "long_data"):
+                                pg_record[field_name] = value.long_data
+                            elif hasattr(value, "double_data"):
+                                pg_record[field_name] = value.double_data
+                            elif hasattr(value, "string_data"):
+                                pg_record[field_name] = value.string_data
+                            elif hasattr(value, "bool_data"):
+                                pg_record[field_name] = value.bool_data
+                            else:
+                                # Fallback to string conversion
+                                pg_record[field_name] = str(value)
+                        elif hasattr(value, "__dict__") and not isinstance(
+                            value, str | int | float | bool | type(None)
+                        ):
+                            # Convert other complex objects to string
+                            pg_record[field_name] = str(value)
+                        else:
+                            pg_record[field_name] = value
+                else:
+                    # User did not provide this field
+                    if hasattr(field, "default_value"):
+                        # Use default value, but ensure it's properly converted
+                        default_val = field.default_value
+                        if hasattr(default_val, "__class__") and "ValueField" in str(type(default_val)):
+                            # Extract actual value from ValueField
+                            if hasattr(default_val, "long_data"):
+                                pg_record[field_name] = default_val.long_data
+                            elif hasattr(default_val, "double_data"):
+                                pg_record[field_name] = default_val.double_data
+                            elif hasattr(default_val, "string_data"):
+                                pg_record[field_name] = default_val.string_data
+                            elif hasattr(default_val, "bool_data"):
+                                pg_record[field_name] = default_val.bool_data
+                            else:
+                                # Fallback to string conversion
+                                pg_record[field_name] = str(default_val)
+                        else:
+                            pg_record[field_name] = default_val
+                    elif getattr(field, "nullable", False):
+                        # Nullable without default, set to NULL
+                        pg_record[field_name] = None  # type: ignore[assignment]
+                    else:
+                        # Field is required but not provided - this will cause constraint violation
+                        # But we still need to include it in the record to maintain column alignment
+                        pg_record[field_name] = None  # type: ignore[assignment]
+
+            # Collect dynamic fields if enabled
+            if hasattr(schema, "enable_dynamic_field") and schema.enable_dynamic_field:
+                for key, value in milvus_record.items():
+                    if key not in defined_fields:
+                        # Check for reserved key conflict
+                        if key == '$meta':
+                            logger.error("Dynamic field key '$meta' conflicts with reserved PostgreSQL column name!")
+                            logger.error(f"Record ID: {milvus_record.get(self.primary_field, 'unknown')}")
+                            logger.error(f"All dynamic keys: {[k for k in milvus_record.keys() if k not in defined_fields]}")
+                            raise ValueError(f"Dynamic field key '{key}' conflicts with reserved PostgreSQL column name")
+                        
+                        # Convert complex types to JSON-serializable format
+                        try:
+                            # Test if value is JSON serializable
+                            json.dumps(value)
+                            dynamic_data[key] = value
+                        except (TypeError, ValueError):
+                            # Convert non-serializable types to string
+                            dynamic_data[key] = str(value)
+                            logger.debug(f"Converted non-serializable dynamic field {key} to string: {str(value)[:50]}")
+
+                if dynamic_data:
+                    try:
+                        pg_record["$meta"] = json.dumps(dynamic_data)
+                        logger.debug(f"Stored {len(dynamic_data)} dynamic fields in $meta: {list(dynamic_data.keys())}")
+                    except (TypeError, ValueError) as e:
+                        logger.warning(f"Failed to serialize dynamic data {dynamic_data}: {e}")
+                        pg_record["$meta"] = json.dumps({k: str(v) for k, v in dynamic_data.items()})
+
+            pg_records.append(pg_record)
+
+        # Debug: Check output data after processing
+        if pg_records:
+            logger.debug(f"_prepare_pg_records output sample: {pg_records[0]}")
+            # Additional debug for problematic types
+            for key, value in pg_records[0].items():
+                if hasattr(value, "__class__") and "ValueField" in str(type(value)):
+                    logger.error(f"Found ValueField in output: {key}={value} (type: {type(value)})")
+                elif not isinstance(value, str | int | float | bool | type(None) | list):
+                    logger.warning(f"Potentially problematic type in output: {key}={value} (type: {type(value)})")
+
+        return pg_records
 
     # ------------------------------------------------------------------
     # Collection DDL operations
@@ -832,14 +1083,22 @@ class MilvusPGClient(MilvusClient):
         cols_sql = []
         for f in schema.fields:
             # Skip vector fields in PostgreSQL if requested
-            if self.ignore_vector and f.dtype == DataType.FLOAT_VECTOR:
+            if self.ignore_vector and f.dtype in [
+                DataType.FLOAT_VECTOR,
+                DataType.BINARY_VECTOR,
+                DataType.SPARSE_FLOAT_VECTOR,
+            ]:
                 logger.debug(f"Skipping vector field '{f.name}' in PostgreSQL table")
                 continue
-            pg_type = self._milvus_dtype_to_pg(f.dtype)
-            col_def = f"{f.name} {pg_type}"
-            if f.is_primary:
-                col_def += " PRIMARY KEY"
+
+            # Use the new column definition builder
+            col_def = self._build_pg_column_def(f)
             cols_sql.append(col_def)
+
+        # Add dynamic field column if enabled
+        if hasattr(schema, "enable_dynamic_field") and schema.enable_dynamic_field:
+            cols_sql.append('"$meta" JSONB')
+            logger.debug("Added $meta column for dynamic fields")
 
         create_sql = f"CREATE TABLE IF NOT EXISTS {collection_name} ({', '.join(cols_sql)});"
         logger.debug(f"PostgreSQL CREATE TABLE SQL: {create_sql}")
@@ -915,6 +1174,36 @@ class MilvusPGClient(MilvusClient):
             raise
 
     # ------------------------------------------------------------------
+    # Helper methods for data processing
+    # ------------------------------------------------------------------
+    def _ensure_meta_consistency(self, pg_records: list[dict[str, Any]], collection_name: str) -> list[str]:
+        """
+        Ensure all records have consistent $meta field if dynamic fields are enabled.
+        
+        Returns the list of column names.
+        """
+        if not pg_records:
+            return []
+            
+        columns = list(pg_records[0].keys())
+        
+        # Check if dynamic fields are enabled for this collection
+        schema = self._get_schema(collection_name)
+        if hasattr(schema, "enable_dynamic_field") and schema.enable_dynamic_field:
+            # Ensure $meta column is included
+            if "$meta" not in columns:
+                columns.append("$meta")
+                logger.debug("Added $meta to columns list for dynamic field support")
+            
+            # Ensure all records have $meta field (even if empty)
+            for record in pg_records:
+                if "$meta" not in record:
+                    record["$meta"] = json.dumps({})
+                    logger.debug(f"Added empty $meta to record {record.get(self.primary_field, 'unknown')}")
+        
+        return columns
+
+    # ------------------------------------------------------------------
     # Write operations with transactional shadow writes
     # ------------------------------------------------------------------
     @staticmethod
@@ -955,40 +1244,72 @@ class MilvusPGClient(MilvusClient):
         self._get_schema(collection_name)
         logger.info(f"Inserting {len(data)} records into collection '{collection_name}'")
         logger.debug(f"Insert data sample: {data[0] if data else 'empty'}")
+        
+        # Debug: Check for $meta conflicts in input data
+        if data:
+            sample_keys = set(data[0].keys())
+            if '$meta' in sample_keys:
+                logger.error(f"[INSERT] CONFLICT: Input data contains '$meta' key! Keys: {sample_keys}")
+            logger.debug(f"[INSERT] Input data keys: {sample_keys}")
 
-        # Use fast preprocessing for better performance
-        # For datasets under 10K records, use direct processing without DataFrame
-        # For larger datasets, fallback to streaming processing
-        large_dataset_threshold = 10000
+        # Get schema for data preparation
+        schema = self._get_schema(collection_name)
 
-        if len(data) <= large_dataset_threshold:
-            # Fast direct processing without DataFrame conversion
-            logger.debug(f"Using fast preprocessing for {len(data)} records")
-            columns, values = self._fast_preprocess_data(data)
-        else:
-            # Fallback to streaming processing for very large datasets
-            logger.debug(f"Using streaming processing for large dataset ({len(data)} records)")
-            import sys
+        # Prepare PostgreSQL records with nullable/default handling
+        try:
+            pg_records = self._prepare_pg_records(data, schema)
+            logger.debug(f"Prepared {len(pg_records)} records with nullable/default handling")
+            
+            # Debug: Check prepared records
+            if pg_records:
+                pg_sample_keys = set(pg_records[0].keys())
+                logger.debug(f"[INSERT] PostgreSQL record keys: {pg_sample_keys}")
+        except Exception as e:
+            logger.error(f"[INSERT] Failed to prepare PostgreSQL records: {e}")
+            logger.error(f"[INSERT] Error type: {type(e).__name__}")
+            raise
 
-            data_size_estimate = sys.getsizeof(data) + sum(sys.getsizeof(record) for record in data[:100])
-            optimal_batch_size = self._calculate_optimal_batch_size(data_size_estimate, len(data))
+        # Convert to columns and values for batch insert
+        if not pg_records:
+            raise SyncError("No records to insert after processing")
 
-            # Process data in streaming fashion
-            all_values = []
-            columns = None
+        # Ensure $meta consistency across all records
+        columns = self._ensure_meta_consistency(pg_records, collection_name)
 
-            for batch_df in self._stream_process_large_data(data, optimal_batch_size):
-                if columns is None:
-                    columns = list(batch_df.columns)
-                batch_values = [tuple(row) for row in batch_df.itertuples(index=False, name=None)]
-                all_values.extend(batch_values)
+        # Ensure all values are PostgreSQL-compatible
+        def sanitize_value(value):
+            """Convert any problematic types to PostgreSQL-compatible types."""
+            if value is None:
+                return None
+            elif isinstance(value, str | int | float | bool):
+                return value
+            elif isinstance(value, list):
+                # Convert lists to proper format
+                return value
+            elif hasattr(value, "__class__") and "ValueField" in str(type(value)):
+                # Extract actual value from ValueField
+                if hasattr(value, "long_data"):
+                    return value.long_data
+                elif hasattr(value, "double_data"):
+                    return value.double_data
+                elif hasattr(value, "string_data"):
+                    return value.string_data
+                elif hasattr(value, "bool_data"):
+                    return value.bool_data
+                else:
+                    # Fallback to string conversion
+                    return str(value)
+            elif hasattr(value, "__dict__"):
+                # Convert other complex objects to string
+                return str(value)
+            else:
+                return value
 
-            values = all_values
+        values = [tuple(sanitize_value(record[col]) for col in columns) for record in pg_records]
 
         # Build efficient batch INSERT SQL
-        if columns is None:
-            raise SyncError("No columns available for insert operation")
-        insert_sql = f"INSERT INTO {collection_name} ({', '.join(columns)}) VALUES %s"
+        quoted_columns = [f'"{col}"' for col in columns]
+        insert_sql = f"INSERT INTO {collection_name} ({', '.join(quoted_columns)}) VALUES %s"
         logger.debug(f"Prepared {len(values)} rows for PostgreSQL batch insert")
 
         # Execute synchronized insert operations
@@ -1020,7 +1341,7 @@ class MilvusPGClient(MilvusClient):
                             # Create LMDB transaction but don't commit yet
                             if not self.lmdb_manager._env:
                                 self.lmdb_manager.connect()
-                            lmdb_txn = self.lmdb_manager._env.begin(write=True)
+                            lmdb_txn = self.lmdb_manager._env.begin(write=True)  # type: ignore[union-attr]
                             self.lmdb_manager.batch_record_pk_states_in_transaction(
                                 lmdb_txn, collection_name, pk_states
                             )
@@ -1117,15 +1438,80 @@ class MilvusPGClient(MilvusClient):
         self._get_schema(collection_name)
         logger.info(f"Upserting {len(data)} records into collection '{collection_name}'")
         logger.debug(f"Upsert data sample: {data[0] if data else 'empty'}")
+        
+        # Debug: Check for $meta conflicts in input data
+        if data:
+            sample_keys = set(data[0].keys())
+            if '$meta' in sample_keys:
+                logger.error(f"[UPSERT] CONFLICT: Input data contains '$meta' key! Keys: {sample_keys}")
+            logger.debug(f"[UPSERT] Input data keys: {sample_keys}")
 
-        # Use fast preprocessing for upsert as well
-        columns, values = self._fast_preprocess_data(data)
+        # Check input data validity - this should help debug the None issue
+        if data and all(value is None for record in data[:3] for value in record.values()):
+            logger.error(f"ERROR: Input data contains all None values. First record: {data[0]}")
+            raise SyncError("Input data validation failed: all field values are None")
+
+        # Get schema for data preparation
+        schema = self._get_schema(collection_name)
+
+        # Prepare PostgreSQL records with nullable/default handling
+        try:
+            pg_records = self._prepare_pg_records(data, schema)
+            logger.debug(f"Prepared {len(pg_records)} records with nullable/default handling")
+            
+            # Debug: Check prepared records
+            if pg_records:
+                pg_sample_keys = set(pg_records[0].keys())
+                logger.debug(f"[UPSERT] PostgreSQL record keys: {pg_sample_keys}")
+        except Exception as e:
+            logger.error(f"[UPSERT] Failed to prepare PostgreSQL records: {e}")
+            logger.error(f"[UPSERT] Error type: {type(e).__name__}")
+            raise
+
+        # Convert to columns and values for batch upsert
+        if not pg_records:
+            raise SyncError("No records to upsert after processing")
+
+        # Ensure $meta consistency across all records
+        columns = self._ensure_meta_consistency(pg_records, collection_name)
+
+        # Ensure all values are PostgreSQL-compatible
+        def sanitize_value(value):
+            """Convert any problematic types to PostgreSQL-compatible types."""
+            if value is None:
+                return None
+            elif isinstance(value, str | int | float | bool):
+                return value
+            elif isinstance(value, list):
+                # Convert lists to proper format
+                return value
+            elif hasattr(value, "__class__") and "ValueField" in str(type(value)):
+                # Extract actual value from ValueField
+                if hasattr(value, "long_data"):
+                    return value.long_data
+                elif hasattr(value, "double_data"):
+                    return value.double_data
+                elif hasattr(value, "string_data"):
+                    return value.string_data
+                elif hasattr(value, "bool_data"):
+                    return value.bool_data
+                else:
+                    # Fallback to string conversion
+                    return str(value)
+            elif hasattr(value, "__dict__"):
+                # Convert other complex objects to string
+                return str(value)
+            else:
+                return value
+
+        values = [tuple(sanitize_value(record[col]) for col in columns) for record in pg_records]
 
         # Build PostgreSQL UPSERT SQL with ON CONFLICT clause
-        updates = ", ".join([f"{col}=EXCLUDED.{col}" for col in columns])
+        quoted_columns = [f'"{col}"' for col in columns]
+        updates = ", ".join([f'"{col}"=EXCLUDED."{col}"' for col in columns if col != self.primary_field])
         insert_sql = (
-            f"INSERT INTO {collection_name} ({', '.join(columns)}) VALUES %s "
-            f"ON CONFLICT ({self.primary_field}) DO UPDATE SET {updates}"
+            f"INSERT INTO {collection_name} ({', '.join(quoted_columns)}) VALUES %s "
+            f'ON CONFLICT ("{self.primary_field}") DO UPDATE SET {updates}'
         )
         logger.debug(f"Prepared PostgreSQL upsert with conflict resolution on '{self.primary_field}'")
 
@@ -1158,7 +1544,7 @@ class MilvusPGClient(MilvusClient):
                             # Create LMDB transaction but don't commit yet
                             if not self.lmdb_manager._env:
                                 self.lmdb_manager.connect()
-                            lmdb_txn = self.lmdb_manager._env.begin(write=True)
+                            lmdb_txn = self.lmdb_manager._env.begin(write=True)  # type: ignore[union-attr]
                             self.lmdb_manager.batch_record_pk_states_in_transaction(
                                 lmdb_txn, collection_name, pk_states
                             )
@@ -1210,11 +1596,43 @@ class MilvusPGClient(MilvusClient):
                 return result
 
             except (psycopg2.OperationalError, psycopg2.DatabaseError) as e:
-                logger.error(f"[UPSERT] Step 1/3: PostgreSQL upsert failed - {type(e).__name__}: {e}")
+                # Enhanced error reporting with debugging information
+                error_details = []
+                error_details.append(f"PostgreSQL error: {type(e).__name__}: {e}")
+                error_details.append(f"Primary field: '{self.primary_field}'")
+                error_details.append(f"Total records to upsert: {len(values)}")
+
+                # Check if this is a null constraint violation
+                if "null value" in str(e) and "violates not-null constraint" in str(e):
+                    error_details.append("DIAGNOSIS: NULL value constraint violation detected")
+
+                    # Analyze which records have null primary keys
+                    null_pk_records = []
+                    for i, value_tuple in enumerate(values[:10]):  # Check first 10 records
+                        if len(columns) > 0:
+                            pk_index = next((j for j, col in enumerate(columns) if col == self.primary_field), None)
+                            if pk_index is not None and pk_index < len(value_tuple):
+                                pk_value = value_tuple[pk_index]
+                                if pk_value is None:
+                                    null_pk_records.append(f"Record {i}: pk_value=None")
+                                else:
+                                    null_pk_records.append(f"Record {i}: pk_value={pk_value}")
+                            else:
+                                null_pk_records.append(f"Record {i}: pk_field_not_found_in_columns")
+
+                    if null_pk_records:
+                        error_details.append(f"Sample record analysis: {null_pk_records}")
+
+                    error_details.append(f"Columns: {columns}")
+                    if values:
+                        error_details.append(f"First record values: {values[0]}")
+
+                full_error_msg = "\n".join(error_details)
+                logger.error(f"[UPSERT] Step 1/3: PostgreSQL upsert failed\n{full_error_msg}")
                 logger.info("[UPSERT] No changes were made to any database")
                 if lmdb_txn:
                     lmdb_txn.abort()
-                raise SyncError(f"PostgreSQL upsert failed: {e}") from e
+                raise SyncError(f"PostgreSQL upsert failed: {e}\n\nDEBUG INFO:\n{full_error_msg}") from e
             except SyncError:
                 # Re-raise SyncError as-is (already logged)
                 logger.info("[UPSERT] PostgreSQL transaction rolled back")
@@ -1281,7 +1699,7 @@ class MilvusPGClient(MilvusClient):
                             # Create LMDB transaction but don't commit yet
                             if not self.lmdb_manager._env:
                                 self.lmdb_manager.connect()
-                            lmdb_txn = self.lmdb_manager._env.begin(write=True)
+                            lmdb_txn = self.lmdb_manager._env.begin(write=True)  # type: ignore[union-attr]
                             self.lmdb_manager.batch_record_pk_states_in_transaction(
                                 lmdb_txn, collection_name, pk_states
                             )
@@ -2304,12 +2722,43 @@ class MilvusPGClient(MilvusClient):
 
                 # Process completed batches
                 logger.info("Starting to process batch results...")
+                logger.info(f"Waiting for {len(future_to_batch)} futures to complete...")
                 batches_completed = 0
                 last_log_time = time.time()
+                batch_start_time = time.time()
+                wait_start_time = time.time()
+
+                # Check if any futures are immediately done
+                done_count = sum(1 for f in future_to_batch.keys() if f.done())
+                logger.info(f"Initial check: {done_count}/{len(future_to_batch)} futures already completed")
+
+                # Add a periodic status check in case we get stuck
+                import threading
+                import time as time_module
+
+                def periodic_status_check():
+                    while batches_completed < len(future_to_batch):
+                        time_module.sleep(10)  # Check every 10 seconds
+                        current_done = sum(1 for f in future_to_batch.keys() if f.done())
+                        current_running = sum(1 for f in future_to_batch.keys() if f.running())
+                        elapsed = time_module.time() - wait_start_time
+                        logger.info(
+                            f"Status check: {current_done} done, {current_running} running, {len(future_to_batch) - current_done - current_running} pending (elapsed: {elapsed:.1f}s)"
+                        )
+
+                status_thread = threading.Thread(target=periodic_status_check, daemon=True)
+                status_thread.start()
 
                 for future in as_completed(future_to_batch, timeout=300):  # 5 minute timeout per batch
                     try:
+                        # Log when we get first future to complete
+                        if batches_completed == 0:
+                            first_future_time = time.time() - wait_start_time
+                            logger.info(f"First future completed after {first_future_time:.1f}s")
+
+                        logger.debug(f"Processing completed future {batches_completed + 1}/{len(future_to_batch)}")
                         batch_size_actual, has_differences, detailed_diff = future.result()
+                        logger.debug(f"Successfully retrieved result from future {batches_completed + 1}")
                         batches_completed += 1
                         batch_job = future_to_batch[future]
                         batch_start = batch_job[0]
@@ -2334,8 +2783,9 @@ class MilvusPGClient(MilvusClient):
                         # Regular progress updates
                         current_time = time.time()
                         if current_time - last_log_time > 30:  # Log every 30 seconds
+                            elapsed_time = current_time - batch_start_time
                             logger.info(
-                                f"Heartbeat: {batches_completed}/{len(batch_jobs)} batches completed, {compared}/{total_pks} records processed"
+                                f"Heartbeat: {batches_completed}/{len(batch_jobs)} batches completed, {compared}/{total_pks} records processed (elapsed: {elapsed_time:.1f}s)"
                             )
                             last_log_time = current_time
 
@@ -2347,7 +2797,12 @@ class MilvusPGClient(MilvusClient):
 
                     except Exception as e:
                         batches_completed += 1
-                        logger.error(f"Batch comparison failed: {e}")
+                        batch_job = future_to_batch.get(future, "unknown")
+                        logger.error(f"Batch comparison failed for job {batch_job}: {e}")
+                        logger.error(f"Exception type: {type(e).__name__}")
+                        import traceback
+
+                        logger.error(f"Traceback: {traceback.format_exc()}")
                         has_any_differences = True
 
         except TimeoutError as e:

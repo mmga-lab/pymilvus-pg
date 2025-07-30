@@ -52,18 +52,25 @@ pdm run pytest tests/test_demo_operations.py::test_name -v
    - Centralized logging using loguru
    - Configurable log levels with file output
 
+5. **LMDB Manager** (`src/pymilvus_pg/lmdb_manager.py`):
+   - Third validation source using LMDB key-value store
+   - Tracks primary key states and operations
+   - Serves as tiebreaker when Milvus and PostgreSQL diverge
+
 ### Key Operations Flow
 
 1. **Data Synchronization**: All write operations (insert, upsert, delete) to Milvus are automatically mirrored to PostgreSQL
 2. **Schema Mapping**: Milvus collection schemas are automatically mapped to PostgreSQL tables
 3. **Query Validation**: Query results can be compared between Milvus and PostgreSQL to verify correctness
 4. **Performance Optimization**: Uses connection pooling, streaming, and concurrent processing for 30-50% throughput improvement
+5. **Three-Way Validation**: LMDB integration provides automatic error source identification when inconsistencies are detected
 
 ### Testing Approach
 
 - Tests use pytest with fixtures defined in `tests/conftest.py`
 - Docker containers (Milvus + PostgreSQL) are automatically started for tests
 - Test data includes various field types: vectors, JSON, arrays, scalars
+- Automatic cleanup of test collections after each test
 
 ### Development Notes
 
