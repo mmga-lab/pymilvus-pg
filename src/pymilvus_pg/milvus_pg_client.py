@@ -110,7 +110,7 @@ def _compare_batch_worker(
     vector_sample_size: int = 8,
     vector_precision_decimals: int = 1,
     vector_comparison_significant_digits: int = 1,
-    use_high_performance_comparator: bool = False,
+    use_high_performance_comparator: bool = True,
     field_types: dict | None = None,
 ) -> tuple[int, bool, list[str]]:
     """
@@ -446,7 +446,7 @@ class MilvusPGClient(MilvusClient):
         self.enable_lmdb: bool = kwargs.pop("enable_lmdb", True)
         self.lmdb_path: str | None = kwargs.pop("lmdb_path", None)
         self.lmdb_map_size: int = kwargs.pop("lmdb_map_size", 10 * 1024 * 1024 * 1024)
-        self.use_high_performance_comparator: bool = kwargs.pop("use_high_performance_comparator", False)
+        self.use_high_performance_comparator: bool = kwargs.pop("use_high_performance_comparator", True)
         uri = kwargs.get("uri", "")
         token = kwargs.get("token", "")
 
