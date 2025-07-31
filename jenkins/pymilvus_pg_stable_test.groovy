@@ -99,7 +99,7 @@ Each schema includes vector fields with appropriate dimensions and various data 
     
     environment {
         ARTIFACTS = "${env.WORKSPACE}/_artifacts"
-        RELEASE_NAME = "milvus-data-verify-${env.BUILD_ID}"
+        RELEASE_NAME = "data-verify-${env.BUILD_ID}"
         NAMESPACE = "chaos-testing"
         POSTGRES_HOST = "postgres-service"
         POSTGRES_DB = "milvus_data_verify"
