@@ -1,0 +1,55 @@
+cluster:
+  enabled: false
+
+log:
+  level: debug
+
+image:
+  all:
+    repository: harbor.milvus.io/milvus/milvus
+    tag: master-20250731-708e426b-amd64
+    pullPolicy: IfNotPresent
+standalone:
+  resources:
+    limits:
+      cpu: 8
+      memory: 64Gi
+    requests:
+      cpu: 4
+      memory: 8Gi
+
+streaming:
+  enabled: true
+
+kafka:
+  enabled: false
+  name: kafka
+  replicaCount: 3
+  defaultReplicationFactor: 2
+
+etcd: 
+  replicaCount: 3
+  image:
+    registry: harbor.milvus.io
+    repository: milvus/etcd
+    tag: 3.5.18-r2
+
+minio:
+  mode: standalone
+
+pulsar:
+  enabled: false
+
+pulsarv3:
+  enabled: false
+
+extraConfigFiles:
+  user.yaml: |+
+    common:
+      storage:
+        enablev2: true
+    trace:
+      exporter: jaeger
+      sampleFraction: 1
+      jaeger:
+        url: http://tempo-distributor.tempo:14268/api/traces

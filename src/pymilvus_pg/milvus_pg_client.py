@@ -1014,12 +1014,16 @@ class MilvusPGClient(MilvusClient):
                 for key, value in milvus_record.items():
                     if key not in defined_fields:
                         # Check for reserved key conflict
-                        if key == '$meta':
+                        if key == "$meta":
                             logger.error("Dynamic field key '$meta' conflicts with reserved PostgreSQL column name!")
                             logger.error(f"Record ID: {milvus_record.get(self.primary_field, 'unknown')}")
-                            logger.error(f"All dynamic keys: {[k for k in milvus_record.keys() if k not in defined_fields]}")
-                            raise ValueError(f"Dynamic field key '{key}' conflicts with reserved PostgreSQL column name")
-                        
+                            logger.error(
+                                f"All dynamic keys: {[k for k in milvus_record.keys() if k not in defined_fields]}"
+                            )
+                            raise ValueError(
+                                f"Dynamic field key '{key}' conflicts with reserved PostgreSQL column name"
+                            )
+
                         # Convert complex types to JSON-serializable format
                         try:
                             # Test if value is JSON serializable
@@ -1179,14 +1183,14 @@ class MilvusPGClient(MilvusClient):
     def _ensure_meta_consistency(self, pg_records: list[dict[str, Any]], collection_name: str) -> list[str]:
         """
         Ensure all records have consistent $meta field if dynamic fields are enabled.
-        
+
         Returns the list of column names.
         """
         if not pg_records:
             return []
-            
+
         columns = list(pg_records[0].keys())
-        
+
         # Check if dynamic fields are enabled for this collection
         schema = self._get_schema(collection_name)
         if hasattr(schema, "enable_dynamic_field") and schema.enable_dynamic_field:
@@ -1194,13 +1198,13 @@ class MilvusPGClient(MilvusClient):
             if "$meta" not in columns:
                 columns.append("$meta")
                 logger.debug("Added $meta to columns list for dynamic field support")
-            
+
             # Ensure all records have $meta field (even if empty)
             for record in pg_records:
                 if "$meta" not in record:
                     record["$meta"] = json.dumps({})
                     logger.debug(f"Added empty $meta to record {record.get(self.primary_field, 'unknown')}")
-        
+
         return columns
 
     # ------------------------------------------------------------------
@@ -1244,11 +1248,11 @@ class MilvusPGClient(MilvusClient):
         self._get_schema(collection_name)
         logger.info(f"Inserting {len(data)} records into collection '{collection_name}'")
         logger.debug(f"Insert data sample: {data[0] if data else 'empty'}")
-        
+
         # Debug: Check for $meta conflicts in input data
         if data:
             sample_keys = set(data[0].keys())
-            if '$meta' in sample_keys:
+            if "$meta" in sample_keys:
                 logger.error(f"[INSERT] CONFLICT: Input data contains '$meta' key! Keys: {sample_keys}")
             logger.debug(f"[INSERT] Input data keys: {sample_keys}")
 
@@ -1259,7 +1263,7 @@ class MilvusPGClient(MilvusClient):
         try:
             pg_records = self._prepare_pg_records(data, schema)
             logger.debug(f"Prepared {len(pg_records)} records with nullable/default handling")
-            
+
             # Debug: Check prepared records
             if pg_records:
                 pg_sample_keys = set(pg_records[0].keys())
@@ -1438,11 +1442,11 @@ class MilvusPGClient(MilvusClient):
         self._get_schema(collection_name)
         logger.info(f"Upserting {len(data)} records into collection '{collection_name}'")
         logger.debug(f"Upsert data sample: {data[0] if data else 'empty'}")
-        
+
         # Debug: Check for $meta conflicts in input data
         if data:
             sample_keys = set(data[0].keys())
-            if '$meta' in sample_keys:
+            if "$meta" in sample_keys:
                 logger.error(f"[UPSERT] CONFLICT: Input data contains '$meta' key! Keys: {sample_keys}")
             logger.debug(f"[UPSERT] Input data keys: {sample_keys}")
 
@@ -1458,7 +1462,7 @@ class MilvusPGClient(MilvusClient):
         try:
             pg_records = self._prepare_pg_records(data, schema)
             logger.debug(f"Prepared {len(pg_records)} records with nullable/default handling")
-            
+
             # Debug: Check prepared records
             if pg_records:
                 pg_sample_keys = set(pg_records[0].keys())

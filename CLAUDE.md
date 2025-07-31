@@ -39,6 +39,7 @@ pdm run pytest tests/test_demo_operations.py::test_name -v
    - Implements synchronized operations between Milvus and PostgreSQL
    - Features connection pooling (2-20 connections) and transaction management
    - Supports ignoring vector fields for metadata-only validation
+   - Key methods include insert, upsert, delete, query, search, export, compare_entities
 
 2. **Type System** (`src/pymilvus_pg/types.py`):
    - Type aliases for primary keys, entities, filters, and operation results
@@ -51,18 +52,20 @@ pdm run pytest tests/test_demo_operations.py::test_name -v
 4. **Logging** (`src/pymilvus_pg/logger_config.py`):
    - Centralized logging using loguru
    - Configurable log levels with file output
+   - Log files stored in `logs/` directory with timestamp naming
 
 5. **LMDB Manager** (`src/pymilvus_pg/lmdb_manager.py`):
    - Third validation source using LMDB key-value store
-   - Tracks primary key states and operations
+   - Tracks primary key states (EXISTS/DELETED) and operations
    - Serves as tiebreaker when Milvus and PostgreSQL diverge
+   - Default location: `.pymilvus_pg_lmdb/` directory
 
 ### Key Operations Flow
 
 1. **Data Synchronization**: All write operations (insert, upsert, delete) to Milvus are automatically mirrored to PostgreSQL
-2. **Schema Mapping**: Milvus collection schemas are automatically mapped to PostgreSQL tables
+2. **Schema Mapping**: Milvus collection schemas are automatically mapped to PostgreSQL tables with appropriate type conversions
 3. **Query Validation**: Query results can be compared between Milvus and PostgreSQL to verify correctness
-4. **Performance Optimization**: Uses connection pooling, streaming, and concurrent processing for 30-50% throughput improvement
+4. **Performance Optimization**: Uses connection pooling, streaming, and concurrent processing with ProcessPoolExecutor
 5. **Three-Way Validation**: LMDB integration provides automatic error source identification when inconsistencies are detected
 
 ### Testing Approach
@@ -71,6 +74,7 @@ pdm run pytest tests/test_demo_operations.py::test_name -v
 - Docker containers (Milvus + PostgreSQL) are automatically started for tests
 - Test data includes various field types: vectors, JSON, arrays, scalars
 - Automatic cleanup of test collections after each test
+- Session-scoped client fixture for performance
 
 ### Development Notes
 
@@ -79,3 +83,5 @@ pdm run pytest tests/test_demo_operations.py::test_name -v
 - Strict type checking with mypy configuration
 - Ruff for linting and formatting (line length: 120)
 - Pre-commit hooks available for code quality
+- PostgreSQL connection pooling with 2-20 connections
+- Support for concurrent operations and batch processing

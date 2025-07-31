@@ -83,7 +83,7 @@ def _insert_op(client: MilvusClient, collection: str) -> None:
         if generated_data:
             # Check for potential $meta conflicts
             sample_keys = set(generated_data[0].keys())
-            if '$meta' in sample_keys:
+            if "$meta" in sample_keys:
                 logger.warning(f"[INSERT] Found '$meta' key in generated data! Keys: {sample_keys}")
             logger.debug(f"[INSERT] Data keys: {sample_keys}")
         client.insert(collection, generated_data)
@@ -92,8 +92,9 @@ def _insert_op(client: MilvusClient, collection: str) -> None:
         logger.error(f"[INSERT] Exception occurred: {e}")
         logger.error(f"[INSERT] Exception type: {type(e).__name__}")
         logger.error(f"[INSERT] Exception details: {str(e)}")
-        if hasattr(e, '__traceback__'):
+        if hasattr(e, "__traceback__"):
             import traceback
+
             logger.error(f"[INSERT] Full traceback: {traceback.format_exc()}")
     finally:
         with active_operations_lock:
@@ -156,7 +157,7 @@ def _upsert_op(client: MilvusClient, collection: str) -> None:
             if generated_data:
                 # Check for potential $meta conflicts
                 sample_keys = set(generated_data[0].keys())
-                if '$meta' in sample_keys:
+                if "$meta" in sample_keys:
                     logger.warning(f"[UPSERT] Found '$meta' key in generated data! Keys: {sample_keys}")
                 logger.debug(f"[UPSERT] Data keys: {sample_keys}")
             client.upsert(collection, generated_data)
@@ -165,8 +166,9 @@ def _upsert_op(client: MilvusClient, collection: str) -> None:
         logger.error(f"[UPSERT] Exception occurred: {e}")
         logger.error(f"[UPSERT] Exception type: {type(e).__name__}")
         logger.error(f"[UPSERT] Exception details: {str(e)}")
-        if hasattr(e, '__traceback__'):
+        if hasattr(e, "__traceback__"):
             import traceback
+
             logger.error(f"[UPSERT] Full traceback: {traceback.format_exc()}")
     finally:
         with active_operations_lock:

@@ -1,0 +1,24 @@
+# values.yaml
+auth:
+  postgresPassword: "admin"
+  username: "postgres"
+  password: "admin"
+  database: "postgres"
+
+primary:
+  persistence:
+    enabled: true
+    size: 100Gi
+  
+  resources:
+    requests:
+      memory: "8Gi"
+      cpu: "4"
+    limits:
+      memory: "16Gi"
+      cpu: "8"
+
+service:
+  type: LoadBalancer
+  ports:
+    postgresql: 5432
