@@ -38,27 +38,15 @@ def get_ecommerce_schema(
     schema = {
         "fields": [
             {"name": "product_id", "type": "INT64", "is_primary": True},
-            {"name": "sku", "type": "VARCHAR", "max_length": 100},
             {"name": "title", "type": "VARCHAR", "max_length": 500, "nullable": True},
-            {"name": "description", "type": "VARCHAR", "max_length": 5000, "nullable": True},
-            {"name": "brand", "type": "VARCHAR", "max_length": 200, "nullable": True, "default_value": "Generic"},
-            {"name": "price", "type": "DOUBLE", "nullable": True, "default_value": 0.0},
-            {"name": "discount_price", "type": "DOUBLE", "nullable": True},
-            {"name": "currency", "type": "VARCHAR", "max_length": 3, "default_value": "USD"},
+            {"name": "price", "type": "DOUBLE", "default_value": 0.0},
             {"name": "in_stock", "type": "BOOL", "default_value": True},
-            {"name": "stock_quantity", "type": "INT64", "nullable": True, "default_value": 0},
             {"name": "rating", "type": "FLOAT", "nullable": True},
-            {"name": "review_count", "type": "INT64", "default_value": 0},
             {"name": "categories", "type": "ARRAY", "element_type": "VARCHAR", "max_capacity": 10, "max_length": 100},
-            {"name": "tags", "type": "ARRAY", "element_type": "VARCHAR", "max_capacity": 20, "max_length": 50},
             {"name": "attributes", "type": "JSON"},
-            {"name": "specifications", "type": "JSON", "nullable": True},
             {"name": "image_embedding", "type": "FLOAT_VECTOR", "dim": vector_dim},
-            {"name": "text_embedding", "type": "FLOAT_VECTOR", "dim": vector_dim},
             {"name": "created_at", "type": "INT64"},
-            {"name": "updated_at", "type": "INT64", "nullable": True},
-            {"name": "vendor_id", "type": "INT64", "nullable": True},
-            {"name": "warehouse_location", "type": "VARCHAR", "max_length": 100, "nullable": True},
+            {"name": "vendor_id", "type": "INT64", "nullable": True, "default_value": 0},
         ],
         "enable_dynamic_field": enable_dynamic,
         "description": "E-commerce product catalog with multi-modal embeddings",
@@ -105,18 +93,10 @@ def get_document_schema(
             {"name": "content", "type": "VARCHAR", "max_length": 65535},
             {"name": "title", "type": "VARCHAR", "max_length": 500, "nullable": True},
             {"name": "source", "type": "VARCHAR", "max_length": 500, "nullable": True, "default_value": "unknown"},
-            {"name": "source_type", "type": "VARCHAR", "max_length": 50, "default_value": "document"},
-            {"name": "language", "type": "VARCHAR", "max_length": 10, "nullable": True, "default_value": "en"},
-            {"name": "chunk_index", "type": "INT64", "default_value": 0},
-            {"name": "total_chunks", "type": "INT64", "nullable": True},
-            {"name": "parent_doc_id", "type": "INT64", "nullable": True},
             {"name": "metadata", "type": "JSON"},
             {"name": "tags", "type": "ARRAY", "element_type": "VARCHAR", "max_capacity": 15, "max_length": 50},
             {"name": "dense_vector", "type": "FLOAT_VECTOR", "dim": vector_dim},
             {"name": "created_at", "type": "INT64"},
-            {"name": "processed_at", "type": "INT64", "nullable": True},
-            {"name": "relevance_score", "type": "FLOAT", "nullable": True},
-            {"name": "access_count", "type": "INT64", "default_value": 0},
         ],
         "enable_dynamic_field": enable_dynamic,
         "description": "Document storage for RAG applications",
@@ -160,29 +140,13 @@ def get_multimedia_schema(
     schema = {
         "fields": [
             {"name": "media_id", "type": "INT64", "is_primary": True},
-            {"name": "media_type", "type": "VARCHAR", "max_length": 20},  # image, video, audio
+            {"name": "media_type", "type": "VARCHAR", "max_length": 20},
             {"name": "file_name", "type": "VARCHAR", "max_length": 500},
-            {"name": "file_path", "type": "VARCHAR", "max_length": 1000, "nullable": True},
             {"name": "file_size", "type": "INT64", "nullable": True},
-            {"name": "mime_type", "type": "VARCHAR", "max_length": 100, "nullable": True},
-            {"name": "duration_ms", "type": "INT64", "nullable": True},  # for video/audio
-            {"name": "width", "type": "INT64", "nullable": True},  # for image/video
-            {"name": "height", "type": "INT64", "nullable": True},  # for image/video
-            {"name": "fps", "type": "FLOAT", "nullable": True},  # for video
-            {"name": "bit_rate", "type": "INT64", "nullable": True},  # for audio/video
-            {"name": "title", "type": "VARCHAR", "max_length": 500, "nullable": True},
-            {"name": "description", "type": "VARCHAR", "max_length": 5000, "nullable": True},
             {"name": "tags", "type": "ARRAY", "element_type": "VARCHAR", "max_capacity": 30, "max_length": 50},
             {"name": "metadata", "type": "JSON"},
-            {"name": "technical_metadata", "type": "JSON", "nullable": True},
             {"name": "image_vector", "type": "FLOAT_VECTOR", "dim": image_vector_dim},
-            {"name": "audio_vector", "type": "FLOAT_VECTOR", "dim": audio_vector_dim, "nullable": True},
-            {"name": "thumbnail_vector", "type": "FLOAT_VECTOR", "dim": 256, "nullable": True},
-            {"name": "created_at", "type": "INT64"},
-            {"name": "modified_at", "type": "INT64", "nullable": True},
             {"name": "view_count", "type": "INT64", "default_value": 0},
-            {"name": "like_count", "type": "INT64", "default_value": 0},
-            {"name": "is_public", "type": "BOOL", "default_value": True},
         ],
         "enable_dynamic_field": enable_dynamic,
         "description": "Multimedia content storage with multi-modal embeddings",
@@ -219,22 +183,12 @@ def get_iot_timeseries_schema(
         "fields": [
             {"name": "reading_id", "type": "INT64", "is_primary": True},
             {"name": "device_id", "type": "VARCHAR", "max_length": 100},
-            {"name": "device_type", "type": "VARCHAR", "max_length": 50},
-            {"name": "location_id", "type": "VARCHAR", "max_length": 100, "nullable": True},
             {"name": "timestamp", "type": "INT64"},
             {"name": "temperature", "type": "DOUBLE", "nullable": True},
-            {"name": "humidity", "type": "DOUBLE", "nullable": True},
-            {"name": "pressure", "type": "DOUBLE", "nullable": True},
             {"name": "battery_level", "type": "FLOAT", "nullable": True, "default_value": 100.0},
-            {"name": "signal_strength", "type": "INT64", "nullable": True},
-            {"name": "is_online", "type": "BOOL", "default_value": True},
-            {"name": "error_code", "type": "INT64", "nullable": True, "default_value": 0},
             {"name": "sensor_values", "type": "ARRAY", "element_type": "DOUBLE", "max_capacity": 10},
             {"name": "metadata", "type": "JSON"},
-            {"name": "anomaly_score", "type": "FLOAT", "nullable": True},
             {"name": "feature_vector", "type": "FLOAT_VECTOR", "dim": vector_dim},
-            {"name": "raw_data", "type": "JSON", "nullable": True},
-            {"name": "processed", "type": "BOOL", "default_value": False},
         ],
         "enable_dynamic_field": enable_dynamic,
         "description": "IoT sensor data with time-series support",
@@ -274,26 +228,13 @@ def get_social_media_schema(
         "fields": [
             {"name": "user_id", "type": "INT64", "is_primary": True},
             {"name": "username", "type": "VARCHAR", "max_length": 100},
-            {"name": "display_name", "type": "VARCHAR", "max_length": 200, "nullable": True},
-            {"name": "email", "type": "VARCHAR", "max_length": 255, "nullable": True},
             {"name": "bio", "type": "VARCHAR", "max_length": 5000, "nullable": True},
-            {"name": "location", "type": "VARCHAR", "max_length": 200, "nullable": True},
             {"name": "verified", "type": "BOOL", "default_value": False},
             {"name": "follower_count", "type": "INT64", "default_value": 0},
-            {"name": "following_count", "type": "INT64", "default_value": 0},
-            {"name": "post_count", "type": "INT64", "default_value": 0},
-            {"name": "account_type", "type": "VARCHAR", "max_length": 50, "default_value": "personal"},
             {"name": "interests", "type": "ARRAY", "element_type": "VARCHAR", "max_capacity": 20, "max_length": 100},
-            {"name": "languages", "type": "ARRAY", "element_type": "VARCHAR", "max_capacity": 5, "max_length": 10},
             {"name": "preferences", "type": "JSON"},
-            {"name": "profile_metadata", "type": "JSON", "nullable": True},
             {"name": "bio_embedding", "type": "FLOAT_VECTOR", "dim": text_vector_dim},
-            {"name": "profile_image_embedding", "type": "FLOAT_VECTOR", "dim": image_vector_dim, "nullable": True},
-            {"name": "created_at", "type": "INT64"},
-            {"name": "last_active", "type": "INT64", "nullable": True},
             {"name": "reputation_score", "type": "FLOAT", "nullable": True, "default_value": 0.0},
-            {"name": "is_active", "type": "BOOL", "default_value": True},
-            {"name": "privacy_settings", "type": "JSON", "default_value": {"public": True}},
         ],
         "enable_dynamic_field": enable_dynamic,
         "description": "Social media user profiles with embeddings",
@@ -302,11 +243,11 @@ def get_social_media_schema(
     return schema
 
 
-def get_test_all_types_schema(
+def get_all_datatypes_schema(
     vector_dim: int = 128,
     enable_dynamic: bool = False,
 ) -> dict[str, Any]:
-    """Test schema with all supported Milvus data types.
+    """Schema demonstrating all supported Milvus data types.
 
     This schema is designed for comprehensive testing of data type handling
     and includes examples of all supported types with various configurations.
@@ -325,33 +266,12 @@ def get_test_all_types_schema(
     """
     schema = {
         "fields": [
-            # Primary key
             {"name": "id", "type": "INT64", "is_primary": True},
-            # Scalar types - basic
             {"name": "bool_field", "type": "BOOL"},
-            {"name": "int8_field", "type": "INT64"},
-            {"name": "int16_field", "type": "INT64"},
-            {"name": "int32_field", "type": "INT64"},
-            {"name": "int64_field", "type": "INT64"},
-            {"name": "float_field", "type": "FLOAT"},
-            {"name": "double_field", "type": "DOUBLE"},
+            {"name": "int_field", "type": "INT64", "nullable": True},
+            {"name": "float_field", "type": "FLOAT", "default_value": 3.14},
             {"name": "varchar_field", "type": "VARCHAR", "max_length": 1000},
-            # Scalar types - with nullable
-            {"name": "bool_nullable", "type": "BOOL", "nullable": True},
-            {"name": "int32_nullable", "type": "INT64", "nullable": True},
-            {"name": "float_nullable", "type": "FLOAT", "nullable": True},
-            {"name": "varchar_nullable", "type": "VARCHAR", "max_length": 500, "nullable": True},
-            # Scalar types - with default values
-            {"name": "bool_default", "type": "BOOL", "default_value": True},
-            {"name": "int32_default", "type": "INT64", "default_value": 42},
-            {"name": "float_default", "type": "DOUBLE", "default_value": 3.14},
-            {"name": "varchar_default", "type": "VARCHAR", "max_length": 100, "default_value": "default_text"},
-            # Scalar types - nullable with defaults
-            {"name": "int64_nullable_default", "type": "INT64", "nullable": True, "default_value": 100},
-            {"name": "double_nullable_default", "type": "DOUBLE", "nullable": True, "default_value": 2.718},
-            # Complex types
             {"name": "json_field", "type": "JSON"},
-            {"name": "json_nullable", "type": "JSON", "nullable": True},
             {"name": "array_int", "type": "ARRAY", "element_type": "INT64", "max_capacity": 10},
             {
                 "name": "array_varchar",
@@ -360,13 +280,11 @@ def get_test_all_types_schema(
                 "max_capacity": 20,
                 "max_length": 100,
             },
-            {"name": "array_double", "type": "ARRAY", "element_type": "DOUBLE", "max_capacity": 15},
-            # Vector types
             {"name": "float_vector", "type": "FLOAT_VECTOR", "dim": vector_dim},
-            {"name": "float_vector_nullable", "type": "FLOAT_VECTOR", "dim": vector_dim},
+            {"name": "double_field", "type": "DOUBLE", "nullable": True, "default_value": 2.718},
         ],
         "enable_dynamic_field": enable_dynamic,
-        "description": "Comprehensive test schema with all data types",
+        "description": "Schema demonstrating all Milvus data types with nullable and default examples",
     }
 
     return schema
@@ -379,7 +297,7 @@ SCHEMA_PRESETS = {
     "multimedia": get_multimedia_schema,
     "iot": get_iot_timeseries_schema,
     "social": get_social_media_schema,
-    "test_all": get_test_all_types_schema,
+    "all_datatypes": get_all_datatypes_schema,
 }
 
 
@@ -419,3 +337,73 @@ def list_schema_presets() -> list[str]:
         List of schema preset names
     """
     return list(SCHEMA_PRESETS.keys())
+
+
+def describe_schema_preset(name: str, **kwargs: Any) -> dict[str, Any]:
+    """Get detailed description of a schema preset including field properties.
+
+    Parameters
+    ----------
+    name : str
+        Name of the schema preset
+    **kwargs : Any
+        Additional parameters passed to the schema function
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - name: Schema preset name
+        - description: Schema description
+        - field_count: Number of fields
+        - fields: List of field details with properties
+
+    Raises
+    ------
+    ValueError
+        If schema name is not found
+    """
+    if name not in SCHEMA_PRESETS:
+        raise ValueError(f"Unknown schema preset: {name}. Available presets: {', '.join(SCHEMA_PRESETS.keys())}")
+
+    schema = get_schema_by_name(name, **kwargs)
+    fields_info = []
+
+    for field in schema["fields"]:
+        field_info = {
+            "name": field["name"],
+            "type": field["type"],
+        }
+
+        # Add primary key info
+        if field.get("is_primary"):
+            field_info["primary_key"] = True
+
+        # Add nullable info
+        if field.get("nullable"):
+            field_info["nullable"] = True
+
+        # Add default value info
+        if "default_value" in field:
+            field_info["default"] = field["default_value"]
+
+        # Add type-specific properties
+        if field["type"] == "VARCHAR":
+            field_info["max_length"] = field.get("max_length")
+        elif field["type"] in ["FLOAT_VECTOR", "BINARY_VECTOR"]:
+            field_info["dim"] = field.get("dim")
+        elif field["type"] == "ARRAY":
+            field_info["element_type"] = field.get("element_type")
+            field_info["max_capacity"] = field.get("max_capacity")
+            if field.get("element_type") == "VARCHAR":
+                field_info["max_length"] = field.get("max_length")
+
+        fields_info.append(field_info)
+
+    return {
+        "name": name,
+        "description": schema.get("description", ""),
+        "field_count": len(schema["fields"]),
+        "enable_dynamic_field": schema.get("enable_dynamic_field", False),
+        "fields": fields_info,
+    }
