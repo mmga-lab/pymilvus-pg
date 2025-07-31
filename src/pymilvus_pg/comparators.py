@@ -8,7 +8,7 @@ import json
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Union, List, Dict, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -127,7 +127,7 @@ class VectorComparator(FieldComparator):
     def __init__(self, field_name: str, tolerance_config: ToleranceConfig):
         super().__init__(field_name, tolerance_config)
 
-    def _sample_vector(self, vector: Union[List[Any], np.ndarray]) -> np.ndarray:
+    def _sample_vector(self, vector: list[Any] | np.ndarray) -> np.ndarray:
         """向量采样，减少比较开销"""
         if not isinstance(vector, np.ndarray):
             vector = np.array(vector, dtype=np.float32)
@@ -202,7 +202,7 @@ class ArrayComparator(FieldComparator):
                 return False
 
             # 逐元素比较
-            for elem1, elem2 in zip(list1, list2):
+            for elem1, elem2 in zip(list1, list2, strict=False):
                 if not self.element_comparator.compare(elem1, elem2):
                     return False
 
@@ -258,7 +258,7 @@ class JSONComparator(FieldComparator):
                     pass
 
             # 有序比较
-            return all(self._compare_json_recursive(elem1, elem2) for elem1, elem2 in zip(obj1, obj2))
+            return all(self._compare_json_recursive(elem1, elem2) for elem1, elem2 in zip(obj1, obj2, strict=False))
 
         elif isinstance(obj1, (int, float)):
             return math.isclose(
@@ -309,7 +309,7 @@ class DefaultValueAwareComparator:
     def __init__(
         self, 
         base_comparator: FieldComparator, 
-        field_schema: Dict[str, Any],
+        field_schema: dict[str, Any],
         tolerance_config: ToleranceConfig
     ):
         self.base_comparator = base_comparator
@@ -380,9 +380,9 @@ class DynamicFieldComparator:
     
     def compare_dynamic_fields(
         self, 
-        meta1: Optional[Dict[str, Any]], 
-        meta2: Optional[Dict[str, Any]]
-    ) -> Tuple[bool, List[str]]:
+        meta1: dict[str, Any] | None, 
+        meta2: dict[str, Any] | None
+    ) -> tuple[bool, list[str]]:
         """比较动态字段内容
         
         Args:
@@ -422,10 +422,10 @@ class HighPerformanceComparator:
 
     def __init__(
         self,
-        field_types: Dict[str, str],
-        field_categories: Dict[str, List[str]],
-        tolerance_config: Optional[ToleranceConfig] = None,
-        field_schemas: Optional[Dict[str, Dict[str, Any]]] = None,  # 新增：字段schema信息
+        field_types: dict[str, str],
+        field_categories: dict[str, list[str]],
+        tolerance_config: ToleranceConfig | None = None,
+        field_schemas: dict[str, dict[str, Any]] | None = None,  # 新增：字段schema信息
     ):
         """
         初始化高性能比较器
@@ -447,9 +447,9 @@ class HighPerformanceComparator:
         # 动态字段比较器
         self.dynamic_comparator = DynamicFieldComparator(self.tolerance)
 
-    def _build_field_comparators(self) -> Dict[str, Union[FieldComparator, DefaultValueAwareComparator]]:
+    def _build_field_comparators(self) -> dict[str, FieldComparator | DefaultValueAwareComparator]:
         """基于schema预编译字段比较器"""
-        comparators: Dict[str, Union[FieldComparator, DefaultValueAwareComparator]] = {}
+        comparators: dict[str, FieldComparator | DefaultValueAwareComparator] = {}
 
         for field_name, data_type in self.field_types.items():
             # 创建基础比较器
@@ -494,8 +494,8 @@ class HighPerformanceComparator:
         return comparators
 
     def compare_records(
-        self, record1: Dict[str, Any], record2: Dict[str, Any], fields_to_compare: Optional[set] = None
-    ) -> Tuple[bool, List[str]]:
+        self, record1: dict[str, Any], record2: dict[str, Any], fields_to_compare: set | None = None
+    ) -> tuple[bool, list[str]]:
         """
         比较两条记录，支持动态字段和schema感知
 
@@ -541,7 +541,7 @@ class HighPerformanceComparator:
 
     def compare_dataframes(
         self, df1: pd.DataFrame, df2: pd.DataFrame, primary_key: str
-    ) -> Tuple[bool, List[Dict[str, Any]]]:
+    ) -> tuple[bool, list[dict[str, Any]]]:
         """
         批量比较两个DataFrame
 
@@ -583,7 +583,7 @@ class HighPerformanceComparator:
 
 
 def create_comparator_from_schema(
-    schema_info: Dict[str, Any], tolerance_config: Optional[ToleranceConfig] = None
+    schema_info: dict[str, Any], tolerance_config: ToleranceConfig | None = None
 ) -> HighPerformanceComparator:
     """
     从schema信息创建比较器
@@ -604,10 +604,10 @@ def create_comparator_from_schema(
 
 
 def create_schema_aware_comparator(
-    field_types: Dict[str, str],
-    field_categories: Dict[str, List[str]], 
-    field_schemas: Dict[str, Dict[str, Any]],
-    tolerance_config: Optional[ToleranceConfig] = None
+    field_types: dict[str, str],
+    field_categories: dict[str, list[str]], 
+    field_schemas: dict[str, dict[str, Any]],
+    tolerance_config: ToleranceConfig | None = None
 ) -> HighPerformanceComparator:
     """
     创建schema感知的比较器（便捷函数）
