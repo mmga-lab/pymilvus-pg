@@ -140,7 +140,7 @@ Each schema includes vector fields with appropriate dimensions and various data 
                         pdm install
                         
                         # Verify installation
-                        pdm run milvus-ingest --help
+                        pdm run pymilvus-pg --help
                         """
                     }
                 }
