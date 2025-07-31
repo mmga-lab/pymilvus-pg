@@ -101,7 +101,6 @@ Each schema includes vector fields with appropriate dimensions and various data 
         ARTIFACTS = "${env.WORKSPACE}/_artifacts"
         RELEASE_NAME = "milvus-data-verify-${env.BUILD_ID}"
         NAMESPACE = "chaos-testing"
-        DATA_PATH = "/root/pymilvus_pg_data/${env.BUILD_ID}"
         POSTGRES_HOST = "postgres-service"
         POSTGRES_DB = "milvus_data_verify"
         POSTGRES_USER = "postgres"
@@ -378,8 +377,6 @@ Each schema includes vector fields with appropriate dimensions and various data 
 
                     archiveArtifacts artifacts: "artifacts-${env.RELEASE_NAME}-server-logs.tar.gz", allowEmptyArchive: true
 
-                    // Cleanup test data
-                    sh "rm -rf ${env.DATA_PATH} || true"
 
                     if ("${params.keep_env}" == "false") {
                         sh "helm uninstall ${env.RELEASE_NAME} -n ${env.NAMESPACE} || true"
