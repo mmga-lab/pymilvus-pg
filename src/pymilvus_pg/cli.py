@@ -692,18 +692,32 @@ def ingest(
 )
 @click.option("--full-scan/--no-full-scan", default=True, help="Perform full scan validation (default: enabled)")
 @click.option(
+    "--sample-percentage",
+    type=click.FloatRange(0.0, 100.0),
+    default=100.0,
+    help="Percentage of data to validate (0-100, default: 100)",
+)
+@click.option(
     "--include-vector",
     is_flag=True,
     help="Include vector fields in PostgreSQL operations (default: False)",
 )
-def validate(uri: str | None, pg_conn: str | None, collection: str, full_scan: bool, include_vector: bool) -> None:
+def validate(
+    uri: str | None,
+    pg_conn: str | None,
+    collection: str,
+    full_scan: bool,
+    sample_percentage: float,
+    include_vector: bool,
+) -> None:
     """Validate data consistency between Milvus and PostgreSQL for a collection."""
     uri = uri or os.getenv("MILVUS_URI", "http://localhost:19530")
     pg_conn = pg_conn or os.getenv("PG_CONN", "postgresql://postgres:admin@localhost:5432/postgres")
 
     client = MilvusClient(uri=uri, pg_conn_str=pg_conn, ignore_vector=not include_vector)
     logger.info(f"Verifying collection: {collection}")
-    client.entity_compare(collection, full_scan=full_scan)
+    logger.info(f"Sample percentage: {sample_percentage}%")
+    client.entity_compare(collection, full_scan=full_scan, sample_percentage=sample_percentage)
 
 
 if __name__ == "__main__":

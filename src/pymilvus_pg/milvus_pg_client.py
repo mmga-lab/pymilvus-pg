@@ -2511,6 +2511,7 @@ class MilvusPGClient(MilvusClient):
         retry_interval: float,
         full_scan: bool,
         compare_pks_first: bool,
+        sample_percentage: float = 100.0,
     ) -> None:
         """Validate parameters for entity comparison."""
         if batch_size <= 0:
@@ -2519,9 +2520,11 @@ class MilvusPGClient(MilvusClient):
             raise ValueError("retry must be non-negative")
         if retry_interval < 0:
             raise ValueError("retry_interval must be non-negative")
+        if not (0.0 <= sample_percentage <= 100.0):
+            raise ValueError("sample_percentage must be between 0.0 and 100.0")
         logger.debug(
             f"Comparison parameters: batch_size={batch_size}, retry={retry}, "
-            f"full_scan={full_scan}, compare_pks_first={compare_pks_first}"
+            f"full_scan={full_scan}, compare_pks_first={compare_pks_first}, sample_percentage={sample_percentage}%"
         )
 
     def _perform_primary_key_comparison(self, collection_name: str) -> bool:
@@ -2624,9 +2627,20 @@ class MilvusPGClient(MilvusClient):
             logger.error(f"Count difference: {abs(milvus_total - pg_total)} records")
         return count_match, milvus_total, pg_total
 
-    def _perform_full_data_comparison(self, collection_name: str, batch_size: int) -> bool:
+    def _perform_full_data_comparison(
+        self, collection_name: str, batch_size: int, sample_percentage: float = 100.0
+    ) -> bool:
         """
         Perform full data comparison using concurrent batch processing.
+
+        Parameters
+        ----------
+        collection_name : str
+            Name of the collection to compare
+        batch_size : int
+            Number of records to process per batch
+        sample_percentage : float, optional
+            Percentage of data to validate (0-100), by default 100.0
 
         Returns
         -------
@@ -2639,15 +2653,40 @@ class MilvusPGClient(MilvusClient):
         # Get primary keys for batch processing
         logger.info("Retrieving primary keys for full data comparison...")
         pk_start_time = time.time()
-        with self._get_pg_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(f"SELECT {self.primary_field} FROM {collection_name};")
-                pks_rows = cursor.fetchall()
+
+        # Sample based on percentage if less than 100%
+        if sample_percentage < 100.0:
+            with self._get_pg_connection() as conn:
+                with conn.cursor() as cursor:
+                    # First get total count
+                    cursor.execute(f"SELECT COUNT(*) FROM {collection_name};")
+                    total_count = cursor.fetchone()[0]
+
+                    # Calculate sample size
+                    sample_size = max(1, int(total_count * sample_percentage / 100.0))
+
+                    # Use TABLESAMPLE for random sampling
+                    cursor.execute(
+                        f"SELECT {self.primary_field} FROM {collection_name} ORDER BY random() LIMIT %s;",
+                        (sample_size,),
+                    )
+                    pks_rows = cursor.fetchall()
+        else:
+            with self._get_pg_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(f"SELECT {self.primary_field} FROM {collection_name};")
+                    pks_rows = cursor.fetchall()
+
         pks = [r[0] for r in pks_rows]
         pk_duration = time.time() - pk_start_time
 
         total_pks = len(pks)
-        logger.info(f"Retrieved {total_pks} primary keys for comparison in {pk_duration:.3f}s")
+        if sample_percentage < 100.0:
+            logger.info(
+                f"Retrieved {total_pks} primary keys ({sample_percentage}% sample) for comparison in {pk_duration:.3f}s"
+            )
+        else:
+            logger.info(f"Retrieved {total_pks} primary keys for comparison in {pk_duration:.3f}s")
 
         if total_pks == 0:
             logger.info(f"No entities to compare for collection '{collection_name}' - validation complete")
@@ -3017,6 +3056,7 @@ class MilvusPGClient(MilvusClient):
         retry_interval: float = 5.0,
         full_scan: bool = False,
         compare_pks_first: bool = True,
+        sample_percentage: float = 100.0,
     ) -> bool:
         """
         Perform comprehensive comparison of entity data between Milvus and PostgreSQL.
@@ -3040,6 +3080,8 @@ class MilvusPGClient(MilvusClient):
             Whether to perform full data comparison or just count check, by default False
         compare_pks_first : bool, optional
             Whether to compare primary keys before data comparison, by default True
+        sample_percentage : float, optional
+            Percentage of data to validate (0-100), by default 100.0
 
         Returns
         -------
@@ -3050,11 +3092,12 @@ class MilvusPGClient(MilvusClient):
         logger.info("=== ENTITY COMPARISON STARTED ===")
         logger.info(f"Collection: '{collection_name}'")
         logger.info(f"Comparison mode: {'Full scan' if full_scan else 'Count-only'}")
+        logger.info(f"Sample percentage: {sample_percentage}%")
         logger.info(f"Primary key validation: {'Enabled' if compare_pks_first else 'Disabled'}")
 
         # Validate parameters
         self._validate_comparison_parameters(
-            collection_name, batch_size, retry, retry_interval, full_scan, compare_pks_first
+            collection_name, batch_size, retry, retry_interval, full_scan, compare_pks_first, sample_percentage
         )
 
         validation_stages = []
@@ -3082,7 +3125,7 @@ class MilvusPGClient(MilvusClient):
             return count_match
 
         # Perform detailed entity comparison
-        data_result = self._perform_full_data_comparison(collection_name, batch_size)
+        data_result = self._perform_full_data_comparison(collection_name, batch_size, sample_percentage)
         validation_stages.append(f"Full data validation: {'PASSED' if data_result else 'FAILED'}")
 
         logger.info("=== ENTITY COMPARISON COMPLETED ===")
