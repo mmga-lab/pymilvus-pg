@@ -110,6 +110,8 @@ def _compare_batch_worker(
     vector_sample_size: int = 8,
     vector_precision_decimals: int = 1,
     vector_comparison_significant_digits: int = 1,
+    use_high_performance_comparator: bool = False,
+    field_types: dict | None = None,
 ) -> tuple[int, bool, list[str]]:
     """
     Worker function for multiprocessing batch comparison.
@@ -281,38 +283,91 @@ def _compare_batch_worker(
         milvus_aligned = milvus_aligned.reindex(columns=pg_aligned.columns)
         pg_aligned = pg_aligned.reindex(columns=milvus_aligned.columns)
 
-        # Direct comparison using DeepDiff with configurable precision
+        # Choose comparison method based on configuration
         t0 = time.time()
-        milvus_dict = milvus_aligned.to_dict(orient="records")
-        pg_dict = pg_aligned.to_dict(orient="records")
 
-        # Use DeepDiff with configurable significant_digits for tolerance control
-        # Lower significant_digits = higher tolerance (e.g., 1 = compare only 1st decimal place)
-        diff = DeepDiff(
-            milvus_dict,
-            pg_dict,
-            ignore_order=True,
-            significant_digits=vector_comparison_significant_digits,
-            view="tree",
-        )
-        has_differences = bool(diff)
+        if use_high_performance_comparator and field_types:
+            # Use high-performance custom comparator
+            from .comparators import HighPerformanceComparator, ToleranceConfig
+
+            # Configure tolerance based on existing parameters
+            tolerance_config = ToleranceConfig(
+                float_absolute_tolerance=10 ** (-vector_precision_decimals),
+                float_relative_tolerance=10 ** (-vector_comparison_significant_digits),
+                vector_absolute_tolerance=10 ** (-vector_precision_decimals),
+                vector_relative_tolerance=10 ** (-vector_comparison_significant_digits),
+                vector_sample_ratio=vector_sample_size / 100.0 if sample_vector else 1.0,
+                vector_min_sample_size=vector_sample_size,
+            )
+
+            # Build field categories for comparator
+            field_categories = {
+                "json_fields": json_fields,
+                "array_fields": array_fields,
+                "float_vector_fields": float_vector_fields,
+                "varchar_fields": varchar_fields,
+            }
+
+            comparator = HighPerformanceComparator(
+                field_types=field_types, field_categories=field_categories, tolerance_config=tolerance_config
+            )
+
+            # Compare using high-performance comparator
+            is_equal, detailed_differences = comparator.compare_dataframes(milvus_aligned, pg_aligned, primary_field)
+            has_differences = not is_equal
+
+            if has_differences:
+                worker_logger.info(f"Differences found in batch {batch_num}")
+                worker_logger.info(f"High-performance comparator found {len(detailed_differences)} different records")
+
+                # Convert to legacy format for compatibility
+                detailed_diff = []
+                for diff_info in detailed_differences:
+                    pk = diff_info["primary_key"]
+                    diff_fields = diff_info["different_fields"]
+                    detailed_diff.append(f"Primary Key: {pk} has differences in fields: {', '.join(diff_fields)}")
+                    for field in diff_fields:
+                        m_val = diff_info["milvus_values"].get(field)
+                        p_val = diff_info["pg_values"].get(field)
+                        detailed_diff.append(f"  Field '{field}': milvus={m_val}, pg={p_val}")
+            else:
+                detailed_diff = []
+
+        else:
+            # Use original DeepDiff method for backward compatibility
+            milvus_dict = milvus_aligned.to_dict(orient="records")
+            pg_dict = pg_aligned.to_dict(orient="records")
+
+            # Use DeepDiff with configurable significant_digits for tolerance control
+            # Lower significant_digits = higher tolerance (e.g., 1 = compare only 1st decimal place)
+            diff = DeepDiff(
+                milvus_dict,
+                pg_dict,
+                ignore_order=True,
+                significant_digits=vector_comparison_significant_digits,
+                view="tree",
+            )
+            has_differences = bool(diff)
+
+            if has_differences:
+                worker_logger.info(f"Differences found in batch {batch_num}")
+                worker_logger.info(f"DeepDiff found differences: {diff}")
+
+                # Generate detailed diff information
+                detailed_diff = _generate_detailed_diff_info(milvus_aligned, pg_aligned)
+            else:
+                detailed_diff = []
+
         tt = time.time() - t0
         comparison_time = time.time() - comparison_start
         total_time = time.time() - start_time
 
-        if has_differences:
-            worker_logger.info(f"Differences found in batch {batch_num}")
-            worker_logger.info(f"Differences found in batch {batch_num}: {diff}")
-
-            # Generate detailed diff information
-            detailed_diff = _generate_detailed_diff_info(milvus_aligned, pg_aligned)
-
-        else:
+        if not has_differences:
             worker_logger.info(f"No differences found in batch {batch_num}")
-            detailed_diff = []
 
+        comparator_name = "HighPerformanceComparator" if use_high_performance_comparator and field_types else "DeepDiff"
         worker_logger.info(
-            f"Batch {batch_num} comparison completed in {comparison_time:.2f}s (DeepDiff: {tt:.2f}s, total: {total_time:.2f}s)"
+            f"Batch {batch_num} comparison completed in {comparison_time:.2f}s ({comparator_name}: {tt:.2f}s, total: {total_time:.2f}s)"
         )
         return len(batch_pks), has_differences, detailed_diff
 
@@ -356,6 +411,9 @@ class MilvusPGClient(MilvusClient):
     vector_comparison_significant_digits: int, optional
         Number of significant digits for vector comparisons. Lower values = higher tolerance.
         Default is 1 (compare only 1st decimal place).
+    use_high_performance_comparator: bool, optional
+        If True, use the custom high-performance comparator instead of DeepDiff for data validation.
+        Provides better performance and more precise tolerance control. Default is False.
 
     Attributes
     ----------
@@ -388,6 +446,7 @@ class MilvusPGClient(MilvusClient):
         self.enable_lmdb: bool = kwargs.pop("enable_lmdb", True)
         self.lmdb_path: str | None = kwargs.pop("lmdb_path", None)
         self.lmdb_map_size: int = kwargs.pop("lmdb_map_size", 10 * 1024 * 1024 * 1024)
+        self.use_high_performance_comparator: bool = kwargs.pop("use_high_performance_comparator", False)
         uri = kwargs.get("uri", "")
         token = kwargs.get("token", "")
 
@@ -805,6 +864,56 @@ class MilvusPGClient(MilvusClient):
                 self.json_fields.append(field.name)
             if field.dtype == DataType.VARCHAR:
                 self.varchar_fields.append(field.name)
+
+    def _get_field_types_dict(self, collection_name: str) -> dict[str, str]:
+        """
+        Get field types dictionary for the specified collection.
+
+        Parameters
+        ----------
+        collection_name : str
+            Name of the collection
+
+        Returns
+        -------
+        dict[str, str]
+            Dictionary mapping field names to their data types
+        """
+        schema = self._get_schema(collection_name)
+        field_types = {}
+
+        for field in schema.fields:
+            # Convert DataType enum to string representation
+            if field.dtype == DataType.BOOL:
+                field_types[field.name] = "BOOL"
+            elif field.dtype == DataType.INT8:
+                field_types[field.name] = "INT8"
+            elif field.dtype == DataType.INT16:
+                field_types[field.name] = "INT16"
+            elif field.dtype == DataType.INT32:
+                field_types[field.name] = "INT32"
+            elif field.dtype == DataType.INT64:
+                field_types[field.name] = "INT64"
+            elif field.dtype == DataType.FLOAT:
+                field_types[field.name] = "FLOAT"
+            elif field.dtype == DataType.DOUBLE:
+                field_types[field.name] = "DOUBLE"
+            elif field.dtype == DataType.VARCHAR:
+                field_types[field.name] = "VARCHAR"
+            elif field.dtype == DataType.JSON:
+                field_types[field.name] = "JSON"
+            elif field.dtype == DataType.ARRAY:
+                field_types[field.name] = "ARRAY"
+            elif field.dtype == DataType.FLOAT_VECTOR:
+                field_types[field.name] = "FLOAT_VECTOR"
+            elif field.dtype == DataType.BINARY_VECTOR:
+                field_types[field.name] = "BINARY_VECTOR"
+            elif field.dtype == DataType.SPARSE_FLOAT_VECTOR:
+                field_types[field.name] = "SPARSE_FLOAT_VECTOR"
+            else:
+                field_types[field.name] = str(field.dtype)
+
+        return field_types
 
     def _milvus_dtype_to_pg(self, field_info: Any) -> str:
         """
@@ -1281,7 +1390,7 @@ class MilvusPGClient(MilvusClient):
         columns = self._ensure_meta_consistency(pg_records, collection_name)
 
         # Ensure all values are PostgreSQL-compatible
-        def sanitize_value(value):
+        def sanitize_value(value: Any) -> Any:
             """Convert any problematic types to PostgreSQL-compatible types."""
             if value is None:
                 return None
@@ -1480,7 +1589,7 @@ class MilvusPGClient(MilvusClient):
         columns = self._ensure_meta_consistency(pg_records, collection_name)
 
         # Ensure all values are PostgreSQL-compatible
-        def sanitize_value(value):
+        def sanitize_value(value: Any) -> Any:
             """Convert any problematic types to PostgreSQL-compatible types."""
             if value is None:
                 return None
@@ -2737,6 +2846,8 @@ class MilvusPGClient(MilvusClient):
                 self.vector_sample_size,
                 self.vector_precision_decimals,
                 self.vector_comparison_significant_digits,
+                getattr(self, "use_high_performance_comparator", False),
+                self._get_field_types_dict(collection_name),
             )
             batch_jobs.append(batch_job)
 
@@ -2779,7 +2890,7 @@ class MilvusPGClient(MilvusClient):
                 import threading
                 import time as time_module
 
-                def periodic_status_check():
+                def periodic_status_check() -> None:
                     while batches_completed < len(future_to_batch):
                         time_module.sleep(10)  # Check every 10 seconds
                         current_done = sum(1 for f in future_to_batch.keys() if f.done())
@@ -2840,7 +2951,7 @@ class MilvusPGClient(MilvusClient):
 
                     except Exception as e:
                         batches_completed += 1
-                        batch_job = future_to_batch.get(future, "unknown")
+                        batch_job = future_to_batch.get(future, ("unknown",))
                         logger.error(f"Batch comparison failed for job {batch_job}: {e}")
                         logger.error(f"Exception type: {type(e).__name__}")
                         import traceback

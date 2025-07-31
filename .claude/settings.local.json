@@ -2,7 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(mkdir:*)",
-      "WebFetch(domain:milvus.io)"
+      "WebFetch(domain:milvus.io)",
+      "Bash(make:*)",
+      "Bash(pdm run pytest:*)",
+      "Bash(pdm run python -m pytest:*)",
+      "Bash(python test:*)",
+      "Bash(python:*)",
+      "Bash(pdm run:*)"
     ],
     "deny": []
   }
