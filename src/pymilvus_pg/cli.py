@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 import click
+import numpy as np
 from pymilvus import DataType
 from pymilvus.milvus_client import IndexParams
 
@@ -28,6 +29,34 @@ _id_lock = threading.Lock()
 
 pause_event = threading.Event()
 stop_event = threading.Event()
+
+
+class NumpyJSONEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types."""
+    
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
+def convert_numpy_types(obj: Any) -> Any:
+    """Recursively convert numpy types to Python native types."""
+    if isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
 
 # Track active operations
 active_operations = 0
@@ -473,12 +502,14 @@ def show_schema(preset_name: str, format: str) -> None:
             try:
                 import yaml  # type: ignore[import-untyped]
 
-                output = yaml.dump(schema_config, default_flow_style=False, sort_keys=False)
+                # Convert numpy types to Python native types for clean YAML output
+                converted_config = convert_numpy_types(schema_config)
+                output = yaml.dump(converted_config, default_flow_style=False, sort_keys=False)
             except ImportError:
                 click.echo("PyYAML not installed. Install with: pip install PyYAML", err=True)
                 return
         else:
-            output = json.dumps(schema_config, indent=2)
+            output = json.dumps(schema_config, indent=2, cls=NumpyJSONEncoder)
 
         click.echo(output)
 
