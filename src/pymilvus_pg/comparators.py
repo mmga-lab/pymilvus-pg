@@ -89,6 +89,14 @@ class NumericComparator(FieldComparator):
             if self.is_integer:
                 return num1 == num2
 
+            # 特殊处理 NaN 情况：两个都是 NaN 时认为相等
+            if math.isnan(num1) and math.isnan(num2):
+                return True
+            
+            # 如果只有一个是 NaN，则不相等
+            if math.isnan(num1) or math.isnan(num2):
+                return False
+
             # 浮点数容差比较
             return math.isclose(
                 num1,

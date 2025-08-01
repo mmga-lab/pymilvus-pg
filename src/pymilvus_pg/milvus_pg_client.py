@@ -987,31 +987,31 @@ class MilvusPGClient(MilvusClient):
 
         return col_def
 
-    def _prepare_pg_records(self, data: EntityData, schema: CollectionSchema) -> list[dict[str, Any]]:
+    def _prepare_unified_records(self, data: EntityData, schema: CollectionSchema) -> list[dict[str, Any]]:
         """
-        Prepare PostgreSQL records from Milvus data, handling nullable/default values.
-
-        This method implements the application-layer handling of nullable and default
-        values to maintain consistency with Milvus semantics.
-
+        Prepare unified records with default value and nullable handling.
+        
+        This method applies default values and nullable logic consistently,
+        creating a unified data source for both PostgreSQL and Milvus.
+        
         Parameters
         ----------
         data : EntityData
-            Original data from Milvus insert/upsert
+            Original data from user
         schema : CollectionSchema
             Collection schema with field definitions
-
+            
         Returns
         -------
         list[dict[str, Any]]
-            Processed records ready for PostgreSQL insertion
+            Unified records with default values applied
         """
-        pg_records = []
+        unified_records = []
         defined_fields = {f.name: f for f in schema.fields}
 
         # Debug: Check input data before processing
         if data:
-            logger.debug(f"_prepare_pg_records input sample: {data[0]}")
+            logger.debug(f"_prepare_unified_records input sample: {data[0]}")
             logger.debug(f"Schema fields: {list(defined_fields.keys())}")
             logger.debug(f"Input data keys: {list(data[0].keys())}")
             missing_fields = set(defined_fields.keys()) - set(data[0].keys())
@@ -1021,21 +1021,101 @@ class MilvusPGClient(MilvusClient):
             if extra_fields:
                 logger.warning(f"Fields in data but not in schema: {extra_fields}")
 
-            # Check for complete mismatch - likely a schema/data generation issue
-            if len(missing_fields) > len(defined_fields) * 0.5:
-                raise SyncError(
-                    f"Data schema mismatch detected! "
-                    f"Expected fields: {list(defined_fields.keys())} "
-                    f"but got: {list(data[0].keys())}. "
-                    f"This usually means the CLI is using wrong schema configuration."
-                )
-
         for milvus_record in data:
-            pg_record = {}
+            unified_record = {}
             dynamic_data = {}
 
-            # Process defined fields
+            # Process defined fields with default value handling
             for field_name, field in defined_fields.items():
+                if field_name in milvus_record:
+                    # User provided a value (including None)
+                    unified_record[field_name] = milvus_record[field_name]
+                else:
+                    # User did not provide this field - apply default value logic
+                    if hasattr(field, "default_value"):
+                        # Use default value
+                        default_val = field.default_value
+                        if hasattr(default_val, "__class__") and "ValueField" in str(type(default_val)):
+                            # Extract actual value from ValueField
+                            if hasattr(default_val, "long_data"):
+                                unified_record[field_name] = default_val.long_data
+                            elif hasattr(default_val, "double_data"):
+                                unified_record[field_name] = default_val.double_data
+                            elif hasattr(default_val, "string_data"):
+                                unified_record[field_name] = default_val.string_data
+                            elif hasattr(default_val, "bool_data"):
+                                unified_record[field_name] = default_val.bool_data
+                            else:
+                                unified_record[field_name] = str(default_val)
+                        else:
+                            unified_record[field_name] = default_val
+                    elif getattr(field, "nullable", False):
+                        # Nullable without default, set to NULL
+                        unified_record[field_name] = None
+                    else:
+                        # Field is required but not provided
+                        unified_record[field_name] = None
+
+            # Collect dynamic fields if enabled
+            if hasattr(schema, "enable_dynamic_field") and schema.enable_dynamic_field:
+                for key, value in milvus_record.items():
+                    if key not in defined_fields:
+                        dynamic_data[key] = value
+
+            # Add dynamic fields to unified record if any
+            if dynamic_data:
+                unified_record["$meta"] = dynamic_data
+
+            unified_records.append(unified_record)
+
+        if unified_records:
+            logger.debug(f"_prepare_unified_records output sample: {unified_records[0]}")
+
+        return unified_records
+
+    def _prepare_pg_records(self, unified_records: list[dict[str, Any]], schema: CollectionSchema) -> list[dict[str, Any]]:
+        """
+        Apply PostgreSQL-specific formatting to unified records.
+
+        This method takes unified records (with default values already applied) 
+        and applies PostgreSQL-specific transformations like vector serialization.
+
+        Parameters
+        ----------
+        unified_records : list[dict[str, Any]]
+            Unified records with default values already applied
+        schema : CollectionSchema
+            Collection schema with field definitions
+
+        Returns
+        -------
+        list[dict[str, Any]]
+            Records formatted for PostgreSQL insertion
+        """
+        pg_records = []
+        defined_fields = {f.name: f for f in schema.fields}
+
+        logger.debug(f"_prepare_pg_records processing {len(unified_records)} unified records")
+        if unified_records:
+            logger.debug(f"_prepare_pg_records input sample: {unified_records[0]}")
+
+        for unified_record in unified_records:
+            pg_record = {}
+
+            # Process all fields with PostgreSQL-specific formatting
+            for field_name, value in unified_record.items():
+                if field_name == "$meta":
+                    # Handle dynamic fields
+                    pg_record[field_name] = json.dumps(value) if value else None
+                    continue
+
+                # Get field definition if available
+                field = defined_fields.get(field_name)
+                if not field:
+                    # Dynamic field or unknown field
+                    pg_record[field_name] = value
+                    continue
+
                 # Skip vector fields if ignored
                 if self.ignore_vector and field.dtype in [
                     DataType.FLOAT_VECTOR,
@@ -1044,112 +1124,50 @@ class MilvusPGClient(MilvusClient):
                 ]:
                     continue
 
-                if field_name in milvus_record:
-                    # User provided a value (including None)
-                    value = milvus_record[field_name]
-
-                    # Handle special vector type serialization
-                    if field.dtype == DataType.SPARSE_FLOAT_VECTOR and value is not None:
-                        # Convert sparse vector dict to JSON
+                # Apply PostgreSQL-specific formatting
+                if value is None:
+                    pg_record[field_name] = None
+                elif field.dtype == DataType.SPARSE_FLOAT_VECTOR:
+                    # Convert sparse vector dict to JSON
+                    pg_record[field_name] = json.dumps(value)
+                elif field.dtype == DataType.BINARY_VECTOR:
+                    # Convert binary vector to bit string
+                    bit_string = "".join(str(bit) for bit in value)
+                    pg_record[field_name] = bit_string
+                elif field.dtype == DataType.JSON:
+                    # Ensure JSON fields are properly serialized
+                    if isinstance(value, dict | list):
                         pg_record[field_name] = json.dumps(value)
-                    elif field.dtype == DataType.BINARY_VECTOR and value is not None:
-                        # Convert binary vector to bit string
-                        bit_string = "".join(str(bit) for bit in value)
-                        pg_record[field_name] = bit_string
-                    elif field.dtype == DataType.JSON and value is not None:
-                        # Ensure JSON fields are properly serialized
-                        if isinstance(value, dict | list):
-                            pg_record[field_name] = json.dumps(value)
-                        else:
-                            pg_record[field_name] = value
-                    elif field.dtype == DataType.ARRAY and value is not None:
-                        # ARRAY fields are stored as JSONB in PostgreSQL
-                        if isinstance(value, list):
-                            pg_record[field_name] = json.dumps(value)
-                        else:
-                            pg_record[field_name] = value
                     else:
-                        # Handle any ValueField or other complex types
-                        if hasattr(value, "__class__") and "ValueField" in str(type(value)):
-                            # Extract actual value from ValueField
-                            if hasattr(value, "long_data"):
-                                pg_record[field_name] = value.long_data
-                            elif hasattr(value, "double_data"):
-                                pg_record[field_name] = value.double_data
-                            elif hasattr(value, "string_data"):
-                                pg_record[field_name] = value.string_data
-                            elif hasattr(value, "bool_data"):
-                                pg_record[field_name] = value.bool_data
-                            else:
-                                # Fallback to string conversion
-                                pg_record[field_name] = str(value)
-                        elif hasattr(value, "__dict__") and not isinstance(
-                            value, str | int | float | bool | type(None)
-                        ):
-                            # Convert other complex objects to string
-                            pg_record[field_name] = str(value)
-                        else:
-                            pg_record[field_name] = value
+                        pg_record[field_name] = value
+                elif field.dtype == DataType.ARRAY:
+                    # ARRAY fields are stored as JSONB in PostgreSQL
+                    if isinstance(value, list):
+                        pg_record[field_name] = json.dumps(value)
+                    else:
+                        pg_record[field_name] = value
                 else:
-                    # User did not provide this field
-                    if hasattr(field, "default_value"):
-                        # Use default value, but ensure it's properly converted
-                        default_val = field.default_value
-                        if hasattr(default_val, "__class__") and "ValueField" in str(type(default_val)):
-                            # Extract actual value from ValueField
-                            if hasattr(default_val, "long_data"):
-                                pg_record[field_name] = default_val.long_data
-                            elif hasattr(default_val, "double_data"):
-                                pg_record[field_name] = default_val.double_data
-                            elif hasattr(default_val, "string_data"):
-                                pg_record[field_name] = default_val.string_data
-                            elif hasattr(default_val, "bool_data"):
-                                pg_record[field_name] = default_val.bool_data
-                            else:
-                                # Fallback to string conversion
-                                pg_record[field_name] = str(default_val)
+                    # Handle any ValueField or other complex types
+                    if hasattr(value, "__class__") and "ValueField" in str(type(value)):
+                        # Extract actual value from ValueField
+                        if hasattr(value, "long_data"):
+                            pg_record[field_name] = value.long_data
+                        elif hasattr(value, "double_data"):
+                            pg_record[field_name] = value.double_data
+                        elif hasattr(value, "string_data"):
+                            pg_record[field_name] = value.string_data
+                        elif hasattr(value, "bool_data"):
+                            pg_record[field_name] = value.bool_data
                         else:
-                            pg_record[field_name] = default_val
-                    elif getattr(field, "nullable", False):
-                        # Nullable without default, set to NULL
-                        pg_record[field_name] = None  # type: ignore[assignment]
+                            # Fallback to string conversion
+                            pg_record[field_name] = str(value)
+                    elif hasattr(value, "__dict__") and not isinstance(
+                        value, str | int | float | bool | type(None)
+                    ):
+                        # Convert other complex objects to string
+                        pg_record[field_name] = str(value)
                     else:
-                        # Field is required but not provided - this will cause constraint violation
-                        # But we still need to include it in the record to maintain column alignment
-                        pg_record[field_name] = None  # type: ignore[assignment]
-
-            # Collect dynamic fields if enabled
-            if hasattr(schema, "enable_dynamic_field") and schema.enable_dynamic_field:
-                for key, value in milvus_record.items():
-                    if key not in defined_fields:
-                        # Check for reserved key conflict
-                        if key == "$meta":
-                            logger.error("Dynamic field key '$meta' conflicts with reserved PostgreSQL column name!")
-                            logger.error(f"Record ID: {milvus_record.get(self.primary_field, 'unknown')}")
-                            logger.error(
-                                f"All dynamic keys: {[k for k in milvus_record.keys() if k not in defined_fields]}"
-                            )
-                            raise ValueError(
-                                f"Dynamic field key '{key}' conflicts with reserved PostgreSQL column name"
-                            )
-
-                        # Convert complex types to JSON-serializable format
-                        try:
-                            # Test if value is JSON serializable
-                            json.dumps(value)
-                            dynamic_data[key] = value
-                        except (TypeError, ValueError):
-                            # Convert non-serializable types to string
-                            dynamic_data[key] = str(value)
-                            logger.debug(f"Converted non-serializable dynamic field {key} to string: {str(value)[:50]}")
-
-                if dynamic_data:
-                    try:
-                        pg_record["$meta"] = json.dumps(dynamic_data)
-                        logger.debug(f"Stored {len(dynamic_data)} dynamic fields in $meta: {list(dynamic_data.keys())}")
-                    except (TypeError, ValueError) as e:
-                        logger.warning(f"Failed to serialize dynamic data {dynamic_data}: {e}")
-                        pg_record["$meta"] = json.dumps({k: str(v) for k, v in dynamic_data.items()})
+                        pg_record[field_name] = value
 
             pg_records.append(pg_record)
 
@@ -1164,6 +1182,7 @@ class MilvusPGClient(MilvusClient):
                     logger.warning(f"Potentially problematic type in output: {key}={value} (type: {type(value)})")
 
         return pg_records
+
 
     # ------------------------------------------------------------------
     # Collection DDL operations
@@ -1368,10 +1387,17 @@ class MilvusPGClient(MilvusClient):
         # Get schema for data preparation
         schema = self._get_schema(collection_name)
 
-        # Prepare PostgreSQL records with nullable/default handling
+        # Prepare unified records with default value handling
         try:
-            pg_records = self._prepare_pg_records(data, schema)
-            logger.debug(f"Prepared {len(pg_records)} records with nullable/default handling")
+            # Step 1: Apply default values and nullable logic
+            unified_records = self._prepare_unified_records(data, schema)
+            logger.debug(f"Prepared {len(unified_records)} unified records with default/nullable handling")
+            
+            # Step 2: Apply PostgreSQL-specific formatting
+            pg_records = self._prepare_pg_records(unified_records, schema)
+            logger.debug(f"Prepared {len(pg_records)} PostgreSQL records with format conversion")
+            
+            logger.info(f"Data handling strategy: PostgreSQL uses processed data (with defaults), Milvus uses original data (testing native handling)")
 
             # Debug: Check prepared records
             if pg_records:
@@ -1483,7 +1509,8 @@ class MilvusPGClient(MilvusClient):
                     logger.info("[INSERT] Step 2/3: Skipping LMDB sync (not enabled)")
 
                 # Step 3: Execute Milvus insert (last, as it cannot be rolled back)
-                logger.info(f"[INSERT] Step 3/3: Starting Milvus insert for {len(data)} records")
+                # NOTE: Use original data to test Milvus's native default/nullable handling
+                logger.info(f"[INSERT] Step 3/3: Starting Milvus insert for {len(data)} records (original data)")
                 t0 = time.time()
                 try:
                     result = super().insert(collection_name, data, **kwargs)
@@ -1567,10 +1594,17 @@ class MilvusPGClient(MilvusClient):
         # Get schema for data preparation
         schema = self._get_schema(collection_name)
 
-        # Prepare PostgreSQL records with nullable/default handling
+        # Prepare unified records with default value handling
         try:
-            pg_records = self._prepare_pg_records(data, schema)
-            logger.debug(f"Prepared {len(pg_records)} records with nullable/default handling")
+            # Step 1: Apply default values and nullable logic
+            unified_records = self._prepare_unified_records(data, schema)
+            logger.debug(f"Prepared {len(unified_records)} unified records with default/nullable handling")
+            
+            # Step 2: Apply PostgreSQL-specific formatting
+            pg_records = self._prepare_pg_records(unified_records, schema)
+            logger.debug(f"Prepared {len(pg_records)} PostgreSQL records with format conversion")
+            
+            logger.info(f"Data handling strategy: PostgreSQL uses processed data (with defaults), Milvus uses original data (testing native handling)")
 
             # Debug: Check prepared records
             if pg_records:
@@ -1686,7 +1720,8 @@ class MilvusPGClient(MilvusClient):
                     logger.info("[UPSERT] Step 2/3: Skipping LMDB sync (not enabled)")
 
                 # Step 3: Execute Milvus upsert (last, as it cannot be rolled back)
-                logger.info(f"[UPSERT] Step 3/3: Starting Milvus upsert for {len(data)} records")
+                # NOTE: Use original data to test Milvus's native default/nullable handling
+                logger.info(f"[UPSERT] Step 3/3: Starting Milvus upsert for {len(data)} records (original data)")
                 t0 = time.time()
                 try:
                     result = super().upsert(collection_name, data, **kwargs)
