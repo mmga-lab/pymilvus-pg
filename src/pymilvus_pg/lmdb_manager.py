@@ -240,6 +240,97 @@ class LMDBManager:
                 "metadata": metadata or {},
             }
             txn.put(key, json.dumps(value).encode())
+    
+    def batch_record_data_in_transaction(
+        self,
+        txn: Any,
+        collection_name: str,
+        records: list[dict[str, Any]],
+        primary_field: str,
+        operation: PKOperation,
+        status: PKStatus = PKStatus.EXISTS,
+    ) -> None:
+        """
+        Record full data records (scalar fields only) in LMDB.
+
+        Parameters
+        ----------
+        txn : lmdb.Transaction
+            Active LMDB write transaction
+        collection_name : str
+            Name of the collection
+        records : list[dict]
+            List of data records containing scalar fields
+        primary_field : str
+            Name of the primary key field
+        operation : PKOperation
+            Operation that led to this state
+        status : PKStatus
+            Status to set for the records
+        """
+        timestamp = time.time()
+        
+        for record in records:
+            if primary_field not in record:
+                continue
+                
+            pk = record[primary_field]
+            key = f"{collection_name}:{pk}".encode()
+            
+            # Store the full scalar data in metadata
+            value = {
+                "status": status.value,
+                "operation": operation.value,
+                "timestamp": timestamp,
+                "data": record,  # Store full record
+            }
+            txn.put(key, json.dumps(value).encode())
+            
+    def batch_mark_deleted_in_transaction(
+        self,
+        txn: Any,
+        collection_name: str,
+        pks: list[Any],
+    ) -> None:
+        """
+        Mark records as deleted without removing the data.
+        
+        This preserves the data history for comparison purposes.
+        
+        Parameters
+        ----------
+        txn : lmdb.Transaction
+            Active LMDB write transaction
+        collection_name : str
+            Name of the collection
+        pks : list[Any]
+            List of primary keys to mark as deleted
+        """
+        timestamp = time.time()
+        
+        for pk in pks:
+            key = f"{collection_name}:{pk}".encode()
+            
+            # Get existing record to preserve data
+            existing = txn.get(key)
+            if existing:
+                value = json.loads(existing.decode())
+                # Update status but keep the data
+                value["status"] = PKStatus.DELETED.value
+                value["operation"] = PKOperation.DELETE.value
+                value["timestamp"] = timestamp
+                value["deletion_time"] = timestamp
+                # Keep the original data in value["data"]
+            else:
+                # No existing record, create minimal deleted record
+                value = {
+                    "status": PKStatus.DELETED.value,
+                    "operation": PKOperation.DELETE.value,
+                    "timestamp": timestamp,
+                    "data": {"primary_key": pk},  # Minimal data
+                }
+            
+            txn.put(key, json.dumps(value).encode())
 
     def get_collection_pks(self, collection_name: str, status: PKStatus | None = None) -> list[Any]:
         """

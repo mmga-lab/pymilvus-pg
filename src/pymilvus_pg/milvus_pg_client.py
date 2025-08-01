@@ -91,6 +91,121 @@ def _generate_detailed_diff_info(milvus_df: pd.DataFrame, pg_df: pd.DataFrame) -
     return diff_info
 
 
+def _generate_detailed_diff_info_with_lmdb(
+    milvus_df: pd.DataFrame, pg_df: pd.DataFrame, collection_name: str, lmdb_db_path: str
+) -> list[str]:
+    """
+    Generate detailed difference information with LMDB tiebreaker data.
+    
+    Parameters
+    ----------
+    milvus_df : pd.DataFrame
+        Aligned DataFrame from Milvus
+    pg_df : pd.DataFrame
+        Aligned DataFrame from PostgreSQL
+    collection_name : str
+        Name of the collection
+    lmdb_db_path : str
+        Path to LMDB database
+        
+    Returns
+    -------
+    list[str]
+        List of detailed difference messages with LMDB tiebreaker
+    """
+    diff_info = []
+    
+    # Get LMDB data for inconsistent records
+    lmdb_data = {}
+    try:
+        from .lmdb_manager import LMDBManager
+        import json
+        
+        temp_lmdb = LMDBManager(lmdb_db_path)
+        temp_lmdb.connect()
+        
+        # Get PKs with differences
+        diff_mask = ~(milvus_df.eq(pg_df))
+        inconsistent_pks = [pk for pk, row_mask in diff_mask.iterrows() if row_mask.any()]
+        
+        with temp_lmdb.transaction() as txn:
+            for pk in inconsistent_pks:
+                key = f"{collection_name}:{pk}".encode()
+                value = txn.get(key)
+                if value:
+                    record_data = json.loads(value.decode())
+                    if record_data.get("status") == "exists" and "data" in record_data:
+                        lmdb_data[pk] = record_data["data"]
+        
+        temp_lmdb.close()
+    except Exception as e:
+        diff_info.append(f"Warning: Failed to fetch LMDB data for tiebreaker: {e}")
+    
+    # Row-by-row differences with LMDB tiebreaker
+    diff_info.append("--- ROW-BY-ROW DIFFERENCES WITH LMDB TIEBREAKER ---")
+    diff_mask = ~(milvus_df.eq(pg_df))
+    for pk, row_mask in diff_mask.iterrows():
+        if row_mask.any():
+            diff_info.append(f"Primary Key: {pk} has row-level differences:")
+            lmdb_record = lmdb_data.get(pk, {})
+            
+            for col, is_diff in row_mask.items():
+                if is_diff:
+                    m_val = milvus_df.at[pk, col]
+                    p_val = pg_df.at[pk, col]
+                    l_val = lmdb_record.get(col, "N/A")
+                    
+                    if lmdb_record:
+                        # Show tiebreaker decision
+                        milvus_matches_lmdb = _values_equal_simple(m_val, l_val)
+                        pg_matches_lmdb = _values_equal_simple(p_val, l_val)
+                        
+                        if milvus_matches_lmdb and not pg_matches_lmdb:
+                            tiebreaker = " [LMDB agrees with Milvus]"
+                        elif pg_matches_lmdb and not milvus_matches_lmdb:
+                            tiebreaker = " [LMDB agrees with PostgreSQL]"
+                        elif not milvus_matches_lmdb and not pg_matches_lmdb:
+                            tiebreaker = " [LMDB differs from both]"
+                        else:
+                            tiebreaker = " [All three systems differ]"
+                        
+                        diff_info.append(f"  Column '{col}': milvus={m_val}, pg={p_val}, lmdb={l_val}{tiebreaker}")
+                    else:
+                        diff_info.append(f"  Column '{col}': milvus={m_val}, pg={p_val}, lmdb=N/A [No LMDB data]")
+    
+    diff_info.append("=== END ROW-BY-ROW DIFFERENCES ===")
+    return diff_info
+
+
+def _values_equal_simple(val1: Any, val2: Any) -> bool:
+    """Simple value equality check with NaN/None handling for use in worker processes."""
+    import math
+    
+    # Handle None values
+    if val1 is None and val2 is None:
+        return True
+    
+    # Handle NaN and None equivalence
+    val1_is_nan = isinstance(val1, float) and math.isnan(val1)
+    val2_is_nan = isinstance(val2, float) and math.isnan(val2)
+    
+    # Consider None and NaN as equivalent
+    if (val1 is None and val2_is_nan) or (val1_is_nan and val2 is None):
+        return True
+    
+    # Handle NaN comparisons
+    if val1_is_nan and val2_is_nan:
+        return True
+    
+    # If one is None/NaN and the other is not, they're different
+    if (val1 is None or val1_is_nan) and not (val2 is None or val2_is_nan):
+        return False
+    if (val2 is None or val2_is_nan) and not (val1 is None or val1_is_nan):
+        return False
+    
+    return val1 == val2
+
+
 def _compare_batch_worker(
     batch_start: int,
     batch_pks: list,
@@ -112,6 +227,8 @@ def _compare_batch_worker(
     vector_comparison_significant_digits: int = 1,
     use_high_performance_comparator: bool = True,
     field_types: dict | None = None,
+    lmdb_enabled: bool = False,
+    lmdb_db_path: str | None = None,
 ) -> tuple[int, bool, list[str]]:
     """
     Worker function for multiprocessing batch comparison.
@@ -320,16 +437,64 @@ def _compare_batch_worker(
                 worker_logger.info(f"Differences found in batch {batch_num}")
                 worker_logger.info(f"High-performance comparator found {len(detailed_differences)} different records")
 
-                # Convert to legacy format for compatibility
+                # Convert to legacy format for compatibility, with LMDB tiebreaker if enabled
                 detailed_diff = []
+                
+                # If LMDB is enabled, fetch LMDB data for inconsistent records
+                lmdb_data = {}
+                if lmdb_enabled and lmdb_db_path:
+                    try:
+                        from .lmdb_manager import LMDBManager
+                        import json
+                        
+                        temp_lmdb = LMDBManager(lmdb_db_path)
+                        temp_lmdb.connect()
+                        
+                        inconsistent_pks = [diff_info["primary_key"] for diff_info in detailed_differences]
+                        
+                        with temp_lmdb.transaction() as txn:
+                            for pk in inconsistent_pks:
+                                key = f"{collection_name}:{pk}".encode()
+                                value = txn.get(key)
+                                if value:
+                                    record_data = json.loads(value.decode())
+                                    if record_data.get("status") == "exists" and "data" in record_data:
+                                        lmdb_data[pk] = record_data["data"]
+                        
+                        temp_lmdb.close()
+                    except Exception as e:
+                        worker_logger.warning(f"Failed to fetch LMDB data for tiebreaker: {e}")
+                
                 for diff_info in detailed_differences:
                     pk = diff_info["primary_key"]
                     diff_fields = diff_info["different_fields"]
                     detailed_diff.append(f"Primary Key: {pk} has differences in fields: {', '.join(diff_fields)}")
+                    
+                    # Get LMDB data for this record if available
+                    lmdb_record = lmdb_data.get(pk, {})
+                    
                     for field in diff_fields:
                         m_val = diff_info["milvus_values"].get(field)
                         p_val = diff_info["pg_values"].get(field)
-                        detailed_diff.append(f"  Field '{field}': milvus={m_val}, pg={p_val}")
+                        l_val = lmdb_record.get(field, "N/A")
+                        
+                        if lmdb_enabled and lmdb_record:
+                            # Show tiebreaker decision
+                            milvus_matches_lmdb = _values_equal_simple(m_val, l_val)
+                            pg_matches_lmdb = _values_equal_simple(p_val, l_val)
+                            
+                            if milvus_matches_lmdb and not pg_matches_lmdb:
+                                tiebreaker = " [LMDB agrees with Milvus]"
+                            elif pg_matches_lmdb and not milvus_matches_lmdb:
+                                tiebreaker = " [LMDB agrees with PostgreSQL]"
+                            elif not milvus_matches_lmdb and not pg_matches_lmdb:
+                                tiebreaker = " [LMDB differs from both]"
+                            else:
+                                tiebreaker = " [All three systems differ]"
+                            
+                            detailed_diff.append(f"  Field '{field}': milvus={m_val}, pg={p_val}, lmdb={l_val}{tiebreaker}")
+                        else:
+                            detailed_diff.append(f"  Field '{field}': milvus={m_val}, pg={p_val}")
             else:
                 detailed_diff = []
 
@@ -353,8 +518,13 @@ def _compare_batch_worker(
                 worker_logger.info(f"Differences found in batch {batch_num}")
                 worker_logger.info(f"DeepDiff found differences: {diff}")
 
-                # Generate detailed diff information
-                detailed_diff = _generate_detailed_diff_info(milvus_aligned, pg_aligned)
+                # Generate detailed diff information with LMDB tiebreaker if enabled
+                if lmdb_enabled and lmdb_db_path:
+                    detailed_diff = _generate_detailed_diff_info_with_lmdb(
+                        milvus_aligned, pg_aligned, collection_name, lmdb_db_path
+                    )
+                else:
+                    detailed_diff = _generate_detailed_diff_info(milvus_aligned, pg_aligned)
             else:
                 detailed_diff = []
 
@@ -1028,25 +1198,51 @@ class MilvusPGClient(MilvusClient):
             # Process defined fields with default value handling
             for field_name, field in defined_fields.items():
                 if field_name in milvus_record:
-                    # User provided a value (including None)
-                    unified_record[field_name] = milvus_record[field_name]
+                    # User provided a value (including None or NaN)
+                    value = milvus_record[field_name]
+                    
+                    # Apply Milvus nullable/default rules:
+                    # If field has default_value and user provides None, use default_value
+                    if value is None and hasattr(field, "default_value"):
+                        # Milvus rule: nullable=True + default_value + user_input=None -> use default_value
+                        default_val = field.default_value
+                        if hasattr(default_val, "__class__") and "ValueField" in str(type(default_val)):
+                            # Extract actual value from ValueField wrapper based on field type
+                            if field.dtype in [DataType.INT8, DataType.INT16, DataType.INT32, DataType.INT64]:
+                                unified_record[field_name] = default_val.long_data
+                            elif field.dtype in [DataType.FLOAT, DataType.DOUBLE]:
+                                unified_record[field_name] = default_val.double_data
+                            elif field.dtype in [DataType.VARCHAR, DataType.JSON]:
+                                unified_record[field_name] = default_val.string_data
+                            elif field.dtype == DataType.BOOL:
+                                unified_record[field_name] = default_val.bool_data
+                            else:
+                                # Fallback to direct value
+                                unified_record[field_name] = default_val
+                        else:
+                            unified_record[field_name] = default_val
+                        logger.debug(f"Applied Milvus rule: {field_name}=None -> default_value={unified_record[field_name]}")
+                    else:
+                        # Keep user's value (including None if no default value)
+                        unified_record[field_name] = value
                 else:
                     # User did not provide this field - apply default value logic
                     if hasattr(field, "default_value"):
                         # Use default value
                         default_val = field.default_value
                         if hasattr(default_val, "__class__") and "ValueField" in str(type(default_val)):
-                            # Extract actual value from ValueField
-                            if hasattr(default_val, "long_data"):
+                            # Extract actual value from ValueField wrapper based on field type
+                            if field.dtype in [DataType.INT8, DataType.INT16, DataType.INT32, DataType.INT64]:
                                 unified_record[field_name] = default_val.long_data
-                            elif hasattr(default_val, "double_data"):
+                            elif field.dtype in [DataType.FLOAT, DataType.DOUBLE]:
                                 unified_record[field_name] = default_val.double_data
-                            elif hasattr(default_val, "string_data"):
+                            elif field.dtype in [DataType.VARCHAR, DataType.JSON]:
                                 unified_record[field_name] = default_val.string_data
-                            elif hasattr(default_val, "bool_data"):
+                            elif field.dtype == DataType.BOOL:
                                 unified_record[field_name] = default_val.bool_data
                             else:
-                                unified_record[field_name] = str(default_val)
+                                # Fallback to direct value
+                                unified_record[field_name] = default_val
                         else:
                             unified_record[field_name] = default_val
                     elif getattr(field, "nullable", False):
@@ -1183,6 +1379,48 @@ class MilvusPGClient(MilvusClient):
 
         return pg_records
 
+    def _extract_scalar_data(self, data: EntityData, schema: CollectionSchema) -> list[dict[str, Any]]:
+        """
+        Extract scalar fields from data records, removing vector fields.
+        
+        This is used for LMDB storage where we only need scalar data.
+        
+        Parameters
+        ----------
+        data : EntityData
+            Original data records
+        schema : CollectionSchema
+            Collection schema to identify vector fields
+            
+        Returns
+        -------
+        list[dict[str, Any]]
+            Records with only scalar fields
+        """
+        scalar_records = []
+        vector_field_names = set()
+        
+        # Identify vector fields
+        for field in schema.fields:
+            if field.dtype in [
+                DataType.FLOAT_VECTOR,
+                DataType.BINARY_VECTOR, 
+                DataType.SPARSE_FLOAT_VECTOR,
+                DataType.FLOAT16_VECTOR,
+                DataType.BFLOAT16_VECTOR,
+            ]:
+                vector_field_names.add(field.name)
+        
+        # Create records with only scalar fields
+        for record in data:
+            scalar_record = {
+                k: v for k, v in record.items() 
+                if k not in vector_field_names
+            }
+            scalar_records.append(scalar_record)
+            
+        logger.debug(f"Extracted {len(scalar_records)} scalar records (removed fields: {vector_field_names})")
+        return scalar_records
 
     # ------------------------------------------------------------------
     # Collection DDL operations
@@ -1471,22 +1709,25 @@ class MilvusPGClient(MilvusClient):
                 if self.lmdb_manager:
                     logger.info(f"[INSERT] Step 2/3: Preparing LMDB transaction for {len(data)} records")
                     t0 = time.time()
-                    pk_states = []
-                    for record in data:
-                        if self.primary_field in record:
-                            pk_states.append((record[self.primary_field], PKStatus.EXISTS, PKOperation.INSERT))
-                    if pk_states:
+                    
+                    # Extract scalar data for LMDB storage (use unified records, not original data)
+                    scalar_records = self._extract_scalar_data(unified_records, schema)
+                    
+                    if scalar_records:
                         try:
                             # Create LMDB transaction but don't commit yet
                             if not self.lmdb_manager._env:
                                 self.lmdb_manager.connect()
                             lmdb_txn = self.lmdb_manager._env.begin(write=True)  # type: ignore[union-attr]
-                            self.lmdb_manager.batch_record_pk_states_in_transaction(
-                                lmdb_txn, collection_name, pk_states
+                            
+                            # Store full scalar data records
+                            self.lmdb_manager.batch_record_data_in_transaction(
+                                lmdb_txn, collection_name, scalar_records, 
+                                self.primary_field, PKOperation.INSERT
                             )
                             lmdb_duration = time.time() - t0
                             logger.info(
-                                f"[INSERT] Step 2/3: LMDB transaction prepared - {len(pk_states)} keys in {lmdb_duration:.3f}s"
+                                f"[INSERT] Step 2/3: LMDB transaction prepared - {len(scalar_records)} records in {lmdb_duration:.3f}s"
                             )
                         except lmdb.MapFullError as e:
                             logger.error(
@@ -1682,22 +1923,25 @@ class MilvusPGClient(MilvusClient):
                 if self.lmdb_manager:
                     logger.info(f"[UPSERT] Step 2/3: Preparing LMDB transaction for {len(data)} records")
                     t0 = time.time()
-                    pk_states = []
-                    for record in data:
-                        if self.primary_field in record:
-                            pk_states.append((record[self.primary_field], PKStatus.EXISTS, PKOperation.UPSERT))
-                    if pk_states:
+                    
+                    # Extract scalar data for LMDB storage (use unified records, not original data)
+                    scalar_records = self._extract_scalar_data(unified_records, schema)
+                    
+                    if scalar_records:
                         try:
                             # Create LMDB transaction but don't commit yet
                             if not self.lmdb_manager._env:
                                 self.lmdb_manager.connect()
                             lmdb_txn = self.lmdb_manager._env.begin(write=True)  # type: ignore[union-attr]
-                            self.lmdb_manager.batch_record_pk_states_in_transaction(
-                                lmdb_txn, collection_name, pk_states
+                            
+                            # Store full scalar data records
+                            self.lmdb_manager.batch_record_data_in_transaction(
+                                lmdb_txn, collection_name, scalar_records,
+                                self.primary_field, PKOperation.UPSERT
                             )
                             lmdb_duration = time.time() - t0
                             logger.info(
-                                f"[UPSERT] Step 2/3: LMDB transaction prepared - {len(pk_states)} keys in {lmdb_duration:.3f}s"
+                                f"[UPSERT] Step 2/3: LMDB transaction prepared - {len(scalar_records)} records in {lmdb_duration:.3f}s"
                             )
                         except lmdb.MapFullError as e:
                             logger.error(
@@ -1841,19 +2085,21 @@ class MilvusPGClient(MilvusClient):
                 if self.lmdb_manager:
                     logger.info(f"[DELETE] Step 2/3: Preparing LMDB transaction for {len(ids)} records")
                     t0 = time.time()
-                    pk_states = [(pk, PKStatus.DELETED, PKOperation.DELETE) for pk in ids]
-                    if pk_states:
+                    
+                    if ids:
                         try:
                             # Create LMDB transaction but don't commit yet
                             if not self.lmdb_manager._env:
                                 self.lmdb_manager.connect()
                             lmdb_txn = self.lmdb_manager._env.begin(write=True)  # type: ignore[union-attr]
-                            self.lmdb_manager.batch_record_pk_states_in_transaction(
-                                lmdb_txn, collection_name, pk_states
+                            
+                            # Mark records as deleted, preserving data history
+                            self.lmdb_manager.batch_mark_deleted_in_transaction(
+                                lmdb_txn, collection_name, ids
                             )
                             lmdb_duration = time.time() - t0
                             logger.info(
-                                f"[DELETE] Step 2/3: LMDB transaction prepared - {len(pk_states)} keys in {lmdb_duration:.3f}s"
+                                f"[DELETE] Step 2/3: LMDB transaction prepared - {len(ids)} keys marked as deleted in {lmdb_duration:.3f}s"
                             )
                         except lmdb.MapFullError as e:
                             logger.error(
@@ -2775,7 +3021,8 @@ class MilvusPGClient(MilvusClient):
         self, collection_name: str, batch_size: int, sample_percentage: float = 100.0
     ) -> bool:
         """
-        Perform full data comparison using concurrent batch processing.
+        Perform full data comparison between Milvus and PostgreSQL.
+        LMDB is only used as a tiebreaker when inconsistencies are found.
 
         Parameters
         ----------
@@ -2791,7 +3038,7 @@ class MilvusPGClient(MilvusClient):
         bool
             True if all data matches, False otherwise
         """
-        logger.info("Stage 3: Full data comparison - Starting comprehensive data validation")
+        logger.info("Stage 3: Full data comparison - Starting Milvus vs PostgreSQL validation")
         t0 = time.time()
 
         # Get primary keys for batch processing
@@ -2837,8 +3084,9 @@ class MilvusPGClient(MilvusClient):
             return True
 
         estimated_batches = (total_pks + batch_size - 1) // batch_size
-        logger.info(f"Starting full data comparison for {total_pks} entities")
+        logger.info(f"Starting Milvus vs PostgreSQL comparison for {total_pks} entities")
         logger.info(f"Comparison configuration: batch_size={batch_size}, estimated_batches={estimated_batches}")
+        logger.info("LMDB will be used as tiebreaker only when inconsistencies are found")
 
         return self._execute_concurrent_comparison(collection_name, pks, batch_size, t0)
 
@@ -2883,6 +3131,9 @@ class MilvusPGClient(MilvusClient):
                 self.vector_comparison_significant_digits,
                 getattr(self, "use_high_performance_comparator", False),
                 self._get_field_types_dict(collection_name),
+                # LMDB tiebreaker parameters
+                hasattr(self, 'lmdb_manager') and self.lmdb_manager is not None,
+                self.lmdb_manager.db_path if hasattr(self, 'lmdb_manager') and self.lmdb_manager else None,
             )
             batch_jobs.append(batch_job)
 
@@ -3066,6 +3317,260 @@ class MilvusPGClient(MilvusClient):
                 has_any_differences = True
 
         return not has_any_differences
+
+    def lmdb_tiebreaker_validation(
+        self, collection_name: str, inconsistent_pks: list[Any], fields_to_compare: list[str] | None = None
+    ) -> dict[str, Any]:
+        """
+        Use LMDB as tiebreaker for records that show inconsistencies between Milvus and PostgreSQL.
+        
+        This method is called only when Milvus vs PostgreSQL comparison finds differences.
+        It uses LMDB data to determine which system has the "correct" data.
+        
+        Parameters
+        ----------
+        collection_name : str
+            Name of the collection to validate
+        inconsistent_pks : list[Any]
+            List of primary keys that showed inconsistencies between Milvus and PostgreSQL
+        fields_to_compare : list[str] | None, optional
+            Specific fields to compare. If None, compares all scalar fields
+            
+        Returns
+        -------
+        dict
+            Tiebreaker results including:
+            - total_records: Total number of inconsistent records checked
+            - milvus_correct: Number of records where Milvus matches LMDB
+            - pg_correct: Number of records where PostgreSQL matches LMDB
+            - both_wrong: Number of records where neither matches LMDB
+            - lmdb_missing: Number of records not found in LMDB
+            - details: Detailed information about each tiebreaker decision
+        """
+        if not self.lmdb_manager:
+            raise SyncError("LMDB manager not enabled, cannot perform tiebreaker validation")
+            
+        if not inconsistent_pks:
+            logger.info("No inconsistent records to validate")
+            return {
+                "total_records": 0,
+                "milvus_correct": 0,
+                "pg_correct": 0,
+                "both_wrong": 0,
+                "lmdb_missing": 0,
+                "details": []
+            }
+            
+        logger.info(f"Starting LMDB tiebreaker validation for {len(inconsistent_pks)} inconsistent records")
+        
+        # Get schema for field information
+        schema = self._get_schema(collection_name)
+        
+        # Determine fields to compare (exclude vectors)
+        if fields_to_compare is None:
+            fields_to_compare = []
+            for field in schema.fields:
+                if field.dtype not in [
+                    DataType.FLOAT_VECTOR,
+                    DataType.BINARY_VECTOR,
+                    DataType.SPARSE_FLOAT_VECTOR,
+                    DataType.FLOAT16_VECTOR,
+                    DataType.BFLOAT16_VECTOR,
+                ]:
+                    fields_to_compare.append(field.name)
+        
+        logger.info(f"Fields to compare for tiebreaker: {fields_to_compare}")
+        
+        results = {
+            "total_records": len(inconsistent_pks),
+            "milvus_correct": 0,
+            "pg_correct": 0,
+            "both_wrong": 0,
+            "lmdb_missing": 0,
+            "details": []
+        }
+        
+        # Process in batches for efficiency
+        batch_size = 1000
+        for i in range(0, len(inconsistent_pks), batch_size):
+            batch_pks = inconsistent_pks[i:i + batch_size]
+            
+            # Fetch from Milvus
+            milvus_filter = f"{self.primary_field} in {list(batch_pks)}"
+            milvus_data = super().query(collection_name, filter=milvus_filter, output_fields=fields_to_compare)
+            milvus_dict = {record[self.primary_field]: record for record in milvus_data}
+            
+            # Fetch from PostgreSQL
+            with self._get_pg_connection() as conn:
+                with conn.cursor() as cursor:
+                    placeholders = ", ".join(["%s"] * len(batch_pks))
+                    field_list = ", ".join(fields_to_compare)
+                    cursor.execute(
+                        f"SELECT {field_list} FROM {collection_name} WHERE {self.primary_field} IN ({placeholders})",
+                        batch_pks
+                    )
+                    pg_rows = cursor.fetchall()
+                    pg_dict = {
+                        row[fields_to_compare.index(self.primary_field)]: {
+                            fields_to_compare[j]: row[j] for j in range(len(fields_to_compare))
+                        }
+                        for row in pg_rows
+                    }
+            
+            # Fetch from LMDB (as tiebreaker)
+            lmdb_dict = {}
+            with self.lmdb_manager.transaction() as txn:
+                for pk in batch_pks:
+                    key = f"{collection_name}:{pk}".encode()
+                    value = txn.get(key)
+                    if value:
+                        record_data = json.loads(value.decode())
+                        if record_data.get("status") == PKStatus.EXISTS.value and "data" in record_data:
+                            # Extract only the fields we're comparing
+                            lmdb_record = {
+                                field: record_data["data"].get(field)
+                                for field in fields_to_compare
+                            }
+                            lmdb_dict[pk] = lmdb_record
+            
+            # Perform tiebreaker analysis
+            for pk in batch_pks:
+                milvus_rec = milvus_dict.get(pk)
+                pg_rec = pg_dict.get(pk)
+                lmdb_rec = lmdb_dict.get(pk)
+                
+                # Perform tiebreaker comparison
+                tiebreaker_result = self._perform_lmdb_tiebreaker(
+                    pk, milvus_rec, pg_rec, lmdb_rec, fields_to_compare
+                )
+                
+                # Update counters based on tiebreaker result
+                if tiebreaker_result["lmdb_missing"]:
+                    results["lmdb_missing"] += 1
+                elif tiebreaker_result["milvus_matches_lmdb"]:
+                    results["milvus_correct"] += 1
+                elif tiebreaker_result["pg_matches_lmdb"]:
+                    results["pg_correct"] += 1
+                else:
+                    results["both_wrong"] += 1
+                
+                results["details"].append(tiebreaker_result)
+        
+        # Log tiebreaker summary
+        total = results["total_records"]
+        milvus_correct = results["milvus_correct"]
+        pg_correct = results["pg_correct"]
+        both_wrong = results["both_wrong"]
+        lmdb_missing = results["lmdb_missing"]
+        
+        logger.info(f"LMDB tiebreaker validation complete for {total} inconsistent records")
+        if milvus_correct > 0:
+            logger.info(f"Milvus was correct in {milvus_correct} cases ({milvus_correct/total*100:.1f}%)")
+        if pg_correct > 0:
+            logger.info(f"PostgreSQL was correct in {pg_correct} cases ({pg_correct/total*100:.1f}%)")
+        if both_wrong > 0:
+            logger.warning(f"Both systems were wrong in {both_wrong} cases ({both_wrong/total*100:.1f}%)")
+        if lmdb_missing > 0:
+            logger.warning(f"LMDB data missing for {lmdb_missing} records ({lmdb_missing/total*100:.1f}%)")
+        
+        return results
+    
+    def _perform_lmdb_tiebreaker(
+        self, 
+        pk: Any,
+        milvus_rec: dict[str, Any] | None,
+        pg_rec: dict[str, Any] | None,
+        lmdb_rec: dict[str, Any] | None,
+        fields_to_compare: list[str]
+    ) -> dict[str, Any]:
+        """
+        Use LMDB as tiebreaker between Milvus and PostgreSQL for a single record.
+        
+        Returns tiebreaker decision with detailed field-level analysis.
+        """
+        result = {
+            "pk": pk,
+            "lmdb_missing": lmdb_rec is None,
+            "milvus_matches_lmdb": False,
+            "pg_matches_lmdb": False,
+            "field_differences": []
+        }
+        
+        # If LMDB data is missing, we can't make a tiebreaker decision
+        if lmdb_rec is None:
+            result["lmdb_missing"] = True
+            return result
+            
+        # Compare Milvus vs LMDB and PostgreSQL vs LMDB field by field
+        milvus_field_matches = 0
+        pg_field_matches = 0
+        total_fields_compared = 0
+        
+        for field in fields_to_compare:
+            milvus_val = milvus_rec.get(field) if milvus_rec else None
+            pg_val = pg_rec.get(field) if pg_rec else None  
+            lmdb_val = lmdb_rec.get(field)
+            
+            # Skip if LMDB doesn't have this field
+            if lmdb_val is None and field != self.primary_field:
+                continue
+                
+            total_fields_compared += 1
+            
+            # Simple equality check (could be enhanced with tolerance)
+            milvus_matches = self._values_equal(milvus_val, lmdb_val)
+            pg_matches = self._values_equal(pg_val, lmdb_val)
+            
+            if milvus_matches:
+                milvus_field_matches += 1
+            if pg_matches:
+                pg_field_matches += 1
+                
+            # Record field-level differences for debugging
+            if not milvus_matches or not pg_matches:
+                result["field_differences"].append({
+                    "field": field,
+                    "milvus_value": milvus_val,
+                    "pg_value": pg_val, 
+                    "lmdb_value": lmdb_val,
+                    "milvus_matches_lmdb": milvus_matches,
+                    "pg_matches_lmdb": pg_matches
+                })
+        
+        # Determine overall matches based on field matches
+        if total_fields_compared > 0:
+            result["milvus_matches_lmdb"] = milvus_field_matches == total_fields_compared
+            result["pg_matches_lmdb"] = pg_field_matches == total_fields_compared
+        
+        return result
+        
+    def _values_equal(self, val1: Any, val2: Any) -> bool:
+        """Simple value equality check with NaN/None handling."""
+        import math
+        
+        # Handle None values
+        if val1 is None and val2 is None:
+            return True
+        
+        # Handle NaN and None equivalence
+        val1_is_nan = isinstance(val1, float) and math.isnan(val1)
+        val2_is_nan = isinstance(val2, float) and math.isnan(val2)
+        
+        # Consider None and NaN as equivalent
+        if (val1 is None and val2_is_nan) or (val1_is_nan and val2 is None):
+            return True
+        
+        # Handle NaN comparisons
+        if val1_is_nan and val2_is_nan:
+            return True
+        
+        # If one is None/NaN and the other is not, they're different
+        if (val1 is None or val1_is_nan) and not (val2 is None or val2_is_nan):
+            return False
+        if (val2 is None or val2_is_nan) and not (val1 is None or val1_is_nan):
+            return False
+        
+        return val1 == val2
 
     def three_way_pk_validation(self, collection_name: str, sample_size: int | None = None) -> dict[str, Any]:
         """

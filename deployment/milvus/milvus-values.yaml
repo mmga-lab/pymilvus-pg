@@ -47,7 +47,7 @@ extraConfigFiles:
   user.yaml: |+
     common:
       storage:
-        enablev2: true
+        enablev2: false
     trace:
       exporter: jaeger
       sampleFraction: 1
