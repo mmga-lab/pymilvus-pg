@@ -25,6 +25,9 @@ spec:
     - name: package-cache
       mountPath: /tmp/.uv-cache
       subPath: uv-cache
+    - name: lmdb-cache
+      mountPath: /tmp/.lmdb-cache
+      subPath: lmdb-cache
   volumes:
   - name: kubeconfig
     configMap:
@@ -34,3 +37,8 @@ spec:
     nfs:
       server: 172.16.70.249
       path: /volume1/test/jenkins_cache
+
+  - name: lmdb-cache
+    nfs:
+      server: 172.16.70.249
+      path: /volume1/test/lmdb_cache
