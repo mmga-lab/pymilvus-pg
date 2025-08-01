@@ -9,7 +9,6 @@ as a tiebreaker when Milvus and PostgreSQL data diverge.
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections.abc import Generator
 from contextlib import contextmanager

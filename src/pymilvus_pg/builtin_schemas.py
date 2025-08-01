@@ -6,6 +6,8 @@ default values, and dynamic field support for comprehensive testing.
 
 from typing import Any
 
+import numpy as np
+
 
 def get_ecommerce_schema(
     vector_dim: int = 768,
@@ -185,7 +187,7 @@ def get_iot_timeseries_schema(
             {"name": "device_id", "type": "VARCHAR", "max_length": 100},
             {"name": "timestamp", "type": "INT64"},
             {"name": "temperature", "type": "DOUBLE", "nullable": True},
-            {"name": "battery_level", "type": "FLOAT", "nullable": True, "default_value": 100.0},
+            {"name": "battery_level", "type": "FLOAT", "nullable": True, "default_value": np.float32(100.0)},
             {"name": "sensor_values", "type": "ARRAY", "element_type": "DOUBLE", "max_capacity": 10},
             {"name": "metadata", "type": "JSON"},
             {"name": "feature_vector", "type": "FLOAT_VECTOR", "dim": vector_dim},
@@ -234,7 +236,7 @@ def get_social_media_schema(
             {"name": "interests", "type": "ARRAY", "element_type": "VARCHAR", "max_capacity": 20, "max_length": 100},
             {"name": "preferences", "type": "JSON"},
             {"name": "bio_embedding", "type": "FLOAT_VECTOR", "dim": text_vector_dim},
-            {"name": "reputation_score", "type": "FLOAT", "nullable": True, "default_value": 0.0},
+            {"name": "reputation_score", "type": "FLOAT", "nullable": True, "default_value": np.float32(0.0)},
         ],
         "enable_dynamic_field": enable_dynamic,
         "description": "Social media user profiles with embeddings",
@@ -270,7 +272,7 @@ def get_all_datatypes_schema(
             {"name": "bool_field", "type": "BOOL"},
             {"name": "bool_nullable_field", "type": "BOOL", "nullable": True},
             {"name": "int_field", "type": "INT64", "nullable": True},
-            {"name": "float_field", "type": "FLOAT", "default_value": 3.14},
+            {"name": "float_field", "type": "FLOAT", "default_value": np.float32(3.0)},
             {"name": "varchar_field", "type": "VARCHAR", "max_length": 1000},
             {"name": "varchar_nullable_default", "type": "VARCHAR", "max_length": 500, "nullable": True, "default_value": "default_text"},
             {"name": "json_field", "type": "JSON"},
