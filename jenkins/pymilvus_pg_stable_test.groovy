@@ -164,7 +164,9 @@ Each schema includes vector fields with appropriate dimensions and various data 
 
         stage('Prepare Milvus Values') {
             when {
-                not { params.use_existing_instances }
+                not { 
+                    equals expected: 'true', actual: "${params.use_existing_instances}"
+                }
             }
             steps {
                 container('main') {
@@ -200,7 +202,9 @@ Each schema includes vector fields with appropriate dimensions and various data 
 
         stage('Deploy Milvus') {
             when {
-                not { params.use_existing_instances }
+                not { 
+                    equals expected: 'true', actual: "${params.use_existing_instances}"
+                }
             }
             options {
                 timeout(time: 15, unit: 'MINUTES')
@@ -247,7 +251,9 @@ Each schema includes vector fields with appropriate dimensions and various data 
 
         stage('Setup PostgreSQL') {
             when {
-                not { params.use_existing_instances }
+                not { 
+                    equals expected: 'true', actual: "${params.use_existing_instances}"
+                }
             }
             options {
                 timeout(time: 15, unit: 'MINUTES')
