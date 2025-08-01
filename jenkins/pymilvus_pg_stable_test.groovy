@@ -120,6 +120,7 @@ Each schema includes vector fields with appropriate dimensions and various data 
         POSTGRES_DB = "milvus_data_verify"
         POSTGRES_USER = "postgres"
         POSTGRES_PASSWORD = "postgres"
+        PYMILVUS_PG_LMDB_PATH = "/tmp/.lmdb-cache-${env.BUILD_ID}"
     }
 
     stages {
@@ -443,6 +444,9 @@ Each schema includes vector fields with appropriate dimensions and various data 
 
                     archiveArtifacts artifacts: "artifacts-${env.RELEASE_NAME}-server-logs.tar.gz", allowEmptyArchive: true
 
+                    // Always cleanup LMDB cache directory
+                    sh "rm -rf ${env.PYMILVUS_PG_LMDB_PATH} || true"
+                    echo "LMDB cache directory ${env.PYMILVUS_PG_LMDB_PATH} cleaned up"
 
                     if ("${params.keep_env}" == "false" && "${params.use_existing_instances}" == "false") {
                         sh "helm uninstall ${env.RELEASE_NAME} -n ${env.NAMESPACE} || true"
@@ -464,6 +468,10 @@ Each schema includes vector fields with appropriate dimensions and various data 
                     echo "Compare Interval: ${params.compare_interval} seconds"
                     echo "Include Vector: ${params.include_vector}"
                     echo "Storage Version: ${params.storage_version}"
+
+                    // Always cleanup LMDB cache directory
+                    sh "rm -rf ${env.PYMILVUS_PG_LMDB_PATH} || true"
+                    echo "LMDB cache directory ${env.PYMILVUS_PG_LMDB_PATH} cleaned up"
 
                     if ("${params.keep_env}" == "false" && "${params.use_existing_instances}" == "false") {
                         sh "helm uninstall ${env.RELEASE_NAME} -n ${env.NAMESPACE} || true"

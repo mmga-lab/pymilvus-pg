@@ -59,7 +59,8 @@ class LMDBManager:
             Maximum size of the database in bytes, default 100GB.
         """
         if db_path is None:
-            db_path = "/tmp/.lmdb-cache"
+            # Check for environment variable first, then fallback to default
+            db_path = os.environ.get("PYMILVUS_PG_LMDB_PATH", "/tmp/.lmdb-cache")
 
         self.db_path = Path(db_path)
         self.db_path.mkdir(exist_ok=True)

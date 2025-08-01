@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import threading
 import time
@@ -616,7 +617,7 @@ class MilvusPGClient(MilvusClient):
         self.vector_comparison_significant_digits: int = kwargs.pop("vector_comparison_significant_digits", 1)
         self.pg_conn_str: str = kwargs.pop("pg_conn_str")
         self.enable_lmdb: bool = kwargs.pop("enable_lmdb", True)
-        self.lmdb_path: str | None = kwargs.pop("lmdb_path", "/tmp/.lmdb-cache")
+        self.lmdb_path: str | None = kwargs.pop("lmdb_path", os.environ.get("PYMILVUS_PG_LMDB_PATH", "/tmp/.lmdb-cache"))
         self.lmdb_map_size: int = kwargs.pop("lmdb_map_size", 100 * 1024 * 1024 * 1024)
         self.use_high_performance_comparator: bool = kwargs.pop("use_high_performance_comparator", True)
         uri = kwargs.get("uri", "")
