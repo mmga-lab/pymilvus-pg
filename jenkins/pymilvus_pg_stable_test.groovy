@@ -90,6 +90,21 @@ Each schema includes vector fields with appropriate dimensions and various data 
             name: 'include_vector',
             defaultValue: false
         )
+        booleanParam(
+            description: 'Use Existing Instances (skip deployment of new Milvus and PostgreSQL)',
+            name: 'use_existing_instances',
+            defaultValue: false
+        )
+        string(
+            description: 'Existing Milvus URI (only used when use_existing_instances is true)',
+            name: 'existing_milvus_uri',
+            defaultValue: 'http://10.104.17.43:19530'
+        )
+        string(
+            description: 'Existing PostgreSQL Connection String (only used when use_existing_instances is true)',
+            name: 'existing_pg_conn',
+            defaultValue: 'postgresql://postgres:admin@10.104.20.96:5432/postgres'
+        )
         choice(
             description: 'Storage Version',
             name: 'storage_version',
@@ -148,6 +163,9 @@ Each schema includes vector fields with appropriate dimensions and various data 
         }        
 
         stage('Prepare Milvus Values') {
+            when {
+                not { params.use_existing_instances }
+            }
             steps {
                 container('main') {
                     script {
@@ -181,6 +199,9 @@ Each schema includes vector fields with appropriate dimensions and various data 
         }
 
         stage('Deploy Milvus') {
+            when {
+                not { params.use_existing_instances }
+            }
             options {
                 timeout(time: 15, unit: 'MINUTES')
             }
@@ -225,6 +246,9 @@ Each schema includes vector fields with appropriate dimensions and various data 
         }
 
         stage('Setup PostgreSQL') {
+            when {
+                not { params.use_existing_instances }
+            }
             options {
                 timeout(time: 15, unit: 'MINUTES')
             }
@@ -269,8 +293,25 @@ Each schema includes vector fields with appropriate dimensions and various data 
             steps {
                 container('main') {
                     script {
-                        def milvusHost = sh(returnStdout: true, script: "kubectl get svc/${env.RELEASE_NAME}-milvus -o jsonpath=\"{.spec.clusterIP}\"").trim()
-                        def postgresHost = sh(returnStdout: true, script: "kubectl get svc/postgres-${env.BUILD_ID}-postgresql -o jsonpath=\"{.spec.clusterIP}\"").trim()
+                        // Determine connection strings based on whether using existing instances
+                        def milvusUri = ""
+                        def pgConn = ""
+                        
+                        if ("${params.use_existing_instances}" == "true") {
+                            milvusUri = "${params.existing_milvus_uri}"
+                            pgConn = "${params.existing_pg_conn}"
+                            echo "Using existing instances:"
+                            echo "Existing Milvus URI: ${milvusUri}"
+                            echo "Existing PostgreSQL Connection: ${pgConn}"
+                        } else {
+                            def milvusHost = sh(returnStdout: true, script: "kubectl get svc/${env.RELEASE_NAME}-milvus -o jsonpath=\"{.spec.clusterIP}\"").trim()
+                            def postgresHost = sh(returnStdout: true, script: "kubectl get svc/postgres-${env.BUILD_ID}-postgresql -o jsonpath=\"{.spec.clusterIP}\"").trim()
+                            milvusUri = "http://${milvusHost}:19530"
+                            pgConn = "postgresql://${env.POSTGRES_USER}:${env.POSTGRES_PASSWORD}@${postgresHost}:5432/${env.POSTGRES_DB}"
+                            echo "Using deployed instances:"
+                            echo "Milvus Host: ${milvusHost}"
+                            echo "PostgreSQL Host: ${postgresHost}"
+                        }
                         
                         sh """
                         echo "Starting Milvus data verify with configuration:"
@@ -280,12 +321,13 @@ Each schema includes vector fields with appropriate dimensions and various data 
                         echo "Compare Interval: ${params.compare_interval} seconds"
                         echo "Include Vector: ${params.include_vector}"
                         echo "Storage Version: ${params.storage_version}"
-                        echo "Milvus Host: ${milvusHost}"
-                        echo "PostgreSQL Host: ${postgresHost}"
+                        echo "Using Existing Instances: ${params.use_existing_instances}"
+                        echo "Milvus URI: ${milvusUri}"
+                        echo "PostgreSQL Connection: ${pgConn}"
                         
                         # Set environment variables for PyMilvus-PG
-                        export MILVUS_URI="http://${milvusHost}:19530"
-                        export PG_CONN="postgresql://${env.POSTGRES_USER}:${env.POSTGRES_PASSWORD}@${postgresHost}:5432/${env.POSTGRES_DB}"
+                        export MILVUS_URI="${milvusUri}"
+                        export PG_CONN="${pgConn}"
                         
                         echo "Environment variables set:"
                         echo "MILVUS_URI: \$MILVUS_URI"
@@ -325,18 +367,36 @@ Each schema includes vector fields with appropriate dimensions and various data 
             steps {
                 container('main') {
                     script {
-                        def milvusHost = sh(returnStdout: true, script: "kubectl get svc/${env.RELEASE_NAME}-milvus -o jsonpath=\"{.spec.clusterIP}\"").trim()
-                        def postgresHost = sh(returnStdout: true, script: "kubectl get svc/postgres-${env.BUILD_ID}-postgresql -o jsonpath=\"{.spec.clusterIP}\"").trim()
+                        // Determine connection strings based on whether using existing instances
+                        def milvusUri = ""
+                        def pgConn = ""
+                        
+                        if ("${params.use_existing_instances}" == "true") {
+                            milvusUri = "${params.existing_milvus_uri}"
+                            pgConn = "${params.existing_pg_conn}"
+                            echo "Using existing instances for final validation:"
+                            echo "Existing Milvus URI: ${milvusUri}"
+                            echo "Existing PostgreSQL Connection: ${pgConn}"
+                        } else {
+                            def milvusHost = sh(returnStdout: true, script: "kubectl get svc/${env.RELEASE_NAME}-milvus -o jsonpath=\"{.spec.clusterIP}\"").trim()
+                            def postgresHost = sh(returnStdout: true, script: "kubectl get svc/postgres-${env.BUILD_ID}-postgresql -o jsonpath=\"{.spec.clusterIP}\"").trim()
+                            milvusUri = "http://${milvusHost}:19530"
+                            pgConn = "postgresql://${env.POSTGRES_USER}:${env.POSTGRES_PASSWORD}@${postgresHost}:5432/${env.POSTGRES_DB}"
+                            echo "Using deployed instances for final validation:"
+                            echo "Milvus Host: ${milvusHost}"
+                            echo "PostgreSQL Host: ${postgresHost}"
+                        }
                         
                         sh """
                         echo "Running final validation check:"
-                        echo "Milvus Host: ${milvusHost}"  
-                        echo "PostgreSQL Host: ${postgresHost}"
                         echo "Schema Preset: ${params.schema_preset}"
+                        echo "Using Existing Instances: ${params.use_existing_instances}"
+                        echo "Milvus URI: ${milvusUri}"
+                        echo "PostgreSQL Connection: ${pgConn}"
                         
                         # Set environment variables for PyMilvus-PG
-                        export MILVUS_URI="http://${milvusHost}:19530"
-                        export PG_CONN="postgresql://${env.POSTGRES_USER}:${env.POSTGRES_PASSWORD}@${postgresHost}:5432/${env.POSTGRES_DB}"
+                        export MILVUS_URI="${milvusUri}"
+                        export PG_CONN="${pgConn}"
                         
                         # Determine collection name based on schema preset
                         COLLECTION_NAME="verify_${params.schema_preset}_${env.BUILD_ID}"
@@ -378,9 +438,11 @@ Each schema includes vector fields with appropriate dimensions and various data 
                     archiveArtifacts artifacts: "artifacts-${env.RELEASE_NAME}-server-logs.tar.gz", allowEmptyArchive: true
 
 
-                    if ("${params.keep_env}" == "false") {
+                    if ("${params.keep_env}" == "false" && "${params.use_existing_instances}" == "false") {
                         sh "helm uninstall ${env.RELEASE_NAME} -n ${env.NAMESPACE} || true"
                         sh "helm uninstall postgres-${env.BUILD_ID} -n ${env.NAMESPACE} || true"
+                    } else if ("${params.use_existing_instances}" == "true") {
+                        echo "Skipping cleanup - using existing instances"
                     }
                 }
             }
@@ -397,9 +459,11 @@ Each schema includes vector fields with appropriate dimensions and various data 
                     echo "Include Vector: ${params.include_vector}"
                     echo "Storage Version: ${params.storage_version}"
 
-                    if ("${params.keep_env}" == "false") {
+                    if ("${params.keep_env}" == "false" && "${params.use_existing_instances}" == "false") {
                         sh "helm uninstall ${env.RELEASE_NAME} -n ${env.NAMESPACE} || true"
                         sh "helm uninstall postgres-${env.BUILD_ID} -n ${env.NAMESPACE} || true"
+                    } else if ("${params.use_existing_instances}" == "true") {
+                        echo "Skipping cleanup - using existing instances"
                     }
                 }
             }
