@@ -717,7 +717,11 @@ def validate(
     client = MilvusClient(uri=uri, pg_conn_str=pg_conn, ignore_vector=not include_vector)
     logger.info(f"Verifying collection: {collection}")
     logger.info(f"Sample percentage: {sample_percentage}%")
-    client.entity_compare(collection, full_scan=full_scan, sample_percentage=sample_percentage)
+    
+    validation_passed = client.entity_compare(collection, full_scan=full_scan, sample_percentage=sample_percentage)
+    
+    if not validation_passed:
+        raise click.ClickException("Validation failed: Data inconsistencies detected between Milvus and PostgreSQL")
 
 
 if __name__ == "__main__":

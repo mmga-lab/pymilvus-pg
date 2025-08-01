@@ -47,6 +47,7 @@ pdm run pytest tests/test_demo_operations.py::test_name -v
 
 3. **Exception Hierarchy** (`src/pymilvus_pg/exceptions.py`):
    - Custom exceptions: ConnectionError, SchemaError, SyncError, ValidationError
+   - Additional specialized exceptions: CollectionNotFoundError, DataTypeMismatchError, FilterConversionError, TransactionError
    - Provides clear error handling for different failure scenarios
 
 4. **Logging** (`src/pymilvus_pg/logger_config.py`):
@@ -59,6 +60,11 @@ pdm run pytest tests/test_demo_operations.py::test_name -v
    - Tracks primary key states (EXISTS/DELETED) and operations
    - Serves as tiebreaker when Milvus and PostgreSQL diverge
    - Default location: `.pymilvus_pg_lmdb/` directory
+
+6. **Comparators** (`src/pymilvus_pg/comparators.py`):
+   - High-performance data comparison replacing DeepDiff for large datasets
+   - Vector sampling for efficient embedding comparisons
+   - Schema-aware comparison logic with precision tolerance configuration
 
 ### Key Operations Flow
 
@@ -85,3 +91,17 @@ pdm run pytest tests/test_demo_operations.py::test_name -v
 - Pre-commit hooks available for code quality
 - PostgreSQL connection pooling with 2-20 connections
 - Support for concurrent operations and batch processing
+
+### CLI Interface
+
+- Command-line tool available via `pymilvus-pg` command
+- Built with Click framework for easy command-line operations
+- Supports data generation, testing, and validation workflows
+- Schema presets available in `src/pymilvus_pg/builtin_schemas.py`
+
+### Environment Variables
+
+Key environment variables for configuration:
+- `MILVUS_URI` - Milvus connection URI (default: http://localhost:19530)
+- `PG_CONN` - PostgreSQL connection string (default: postgresql://postgres:admin@localhost:5432/postgres)
+- `PYMILVUS_PG_LOG_DIR` - Custom log directory (default: ./logs)

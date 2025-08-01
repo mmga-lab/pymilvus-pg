@@ -118,8 +118,9 @@ def _generate_detailed_diff_info_with_lmdb(
     # Get LMDB data for inconsistent records
     lmdb_data = {}
     try:
-        from .lmdb_manager import LMDBManager
         import json
+
+        from .lmdb_manager import LMDBManager
         
         temp_lmdb = LMDBManager(lmdb_db_path)
         temp_lmdb.connect()
@@ -444,8 +445,9 @@ def _compare_batch_worker(
                 lmdb_data = {}
                 if lmdb_enabled and lmdb_db_path:
                     try:
-                        from .lmdb_manager import LMDBManager
                         import json
+
+                        from .lmdb_manager import LMDBManager
                         
                         temp_lmdb = LMDBManager(lmdb_db_path)
                         temp_lmdb.connect()
@@ -1635,7 +1637,7 @@ class MilvusPGClient(MilvusClient):
             pg_records = self._prepare_pg_records(unified_records, schema)
             logger.debug(f"Prepared {len(pg_records)} PostgreSQL records with format conversion")
             
-            logger.info(f"Data handling strategy: PostgreSQL uses processed data (with defaults), Milvus uses original data (testing native handling)")
+            logger.info("Data handling strategy: PostgreSQL uses processed data (with defaults), Milvus uses original data (testing native handling)")
 
             # Debug: Check prepared records
             if pg_records:
@@ -1845,7 +1847,7 @@ class MilvusPGClient(MilvusClient):
             pg_records = self._prepare_pg_records(unified_records, schema)
             logger.debug(f"Prepared {len(pg_records)} PostgreSQL records with format conversion")
             
-            logger.info(f"Data handling strategy: PostgreSQL uses processed data (with defaults), Milvus uses original data (testing native handling)")
+            logger.info("Data handling strategy: PostgreSQL uses processed data (with defaults), Milvus uses original data (testing native handling)")
 
             # Debug: Check prepared records
             if pg_records:
