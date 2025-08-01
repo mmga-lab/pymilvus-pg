@@ -268,9 +268,11 @@ def get_all_datatypes_schema(
         "fields": [
             {"name": "id", "type": "INT64", "is_primary": True},
             {"name": "bool_field", "type": "BOOL"},
+            {"name": "bool_nullable_field", "type": "BOOL", "nullable": True},
             {"name": "int_field", "type": "INT64", "nullable": True},
             {"name": "float_field", "type": "FLOAT", "default_value": 3.14},
             {"name": "varchar_field", "type": "VARCHAR", "max_length": 1000},
+            {"name": "varchar_nullable_default", "type": "VARCHAR", "max_length": 500, "nullable": True, "default_value": "default_text"},
             {"name": "json_field", "type": "JSON"},
             {"name": "array_int", "type": "ARRAY", "element_type": "INT64", "max_capacity": 10},
             {
